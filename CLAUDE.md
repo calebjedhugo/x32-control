@@ -2,14 +2,15 @@
 
 Python scripts for autonomous control of Behringer X-32 digital mixer via OSC protocol.
 
-**IMPORTANT: Run `pip install -r requirements.txt` on first use**
+**IMPORTANT: Virtual environment is set up at `venv/` - dependencies already installed**
 **IMPORTANT: Configure `config.json` with mixer IP before running any scripts**
 
 ## Bash Commands
 
-Always run from project directory:
+Always run from project directory with venv activated:
 ```bash
 cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
+source venv/bin/activate
 ```
 
 | Command | Description |

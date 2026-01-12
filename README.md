@@ -15,6 +15,14 @@ Python scripts for controlling Behringer X-32 digital mixer via OSC (Open Sound 
 
 ### 1. Install Dependencies
 
+A virtual environment is already set up with dependencies installed. To use it:
+
+```bash
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
+source venv/bin/activate
+```
+
+If you need to reinstall dependencies:
 ```bash
 pip install -r requirements.txt
 ```
