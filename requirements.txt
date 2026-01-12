@@ -1,0 +1,2 @@
+behringer-mixer>=0.4.11
+python-osc>=1.8.3

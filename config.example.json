@@ -1,0 +1,12 @@
+{
+  "mixer_ip": "192.168.0.XXX",
+  "mixer_port": 10023,
+  "mixer_type": "X32",
+  "timeout_seconds": 5,
+  "default_output_format": "json",
+  "snapshot_dir": "snapshots",
+  "favorites": {
+    "vocals": ["/ch/01", "/ch/02", "/ch/03"],
+    "drums": ["/ch/09", "/ch/10", "/ch/11", "/ch/12"]
+  }
+}
