@@ -56,6 +56,98 @@ source venv/bin/activate
 
 5. **Never make changes during live sound** without explicit user instruction
 
+## Setup & Channel Map
+
+### Venue
+- **Type**: Church sanctuary, ~400 seats
+- **Layout**: Platform corner-loaded with storage/baptismal behind (hard surfaces). Sound booth in opposite corner. Main ceiling ~20ft at booth, rising toward platform. Soffits along both side walls near booth create 10ft ceiling over edge seating with vertical faces up to main ceiling.
+- **PA**: Two mains mounted either side of platform, crossed to center of room. One sub (overpowered even at min volume) firing into left platform wall - corner-loaded, causes excessive LF in room.
+- **Acoustics**: Pew cushions, commercial carpet. All hard wall surfaces. Complex geometry but many parallel walls (flutter echo risk).
+- **Baptismal**: Usually covered, elevated above platform for visibility.
+- **Known room issues**: Low-mid buildup (200-400Hz) from corner loading. Sub overloads room with LF. Booth position doesn't represent congregation's experience.
+- **Workaround**: Master bus shelf EQ cuts LF for house, then compensated back for livestream. This affects overall mix strategy.
+
+### Context
+- **Typical use**: Contemporary Christian worship (Phil Wickham, Hillsong style)
+- **Target aesthetic**: Modern/polished worship - present vocals, full but controlled low end
+- **Stage setup**: Full band - acoustic drums (skilled players, no cage), 6ft grand piano, acoustic/bass/electric guitars, electric keyboard, multiple vocalists (most doubling on instruments), occasional flute or violin
+- **Bleed consideration**: Grand piano + many open vocal mics = significant bleed management needed
+
+### Channel Map
+
+**Channels 1-16: Vocals & Inputs**
+| Ch | Name | Source | Notes |
+|----|------|--------|-------|
+| 1 | Tammy | Lead vocal | Also plays piano (17-18) and guitar (19) |
+| 2 | Randy | Vocal | High preamp (+31dB) - quiet/low-output mic |
+| 3 | John | Vocal | High preamp (+39dB) - quiet/low-output mic |
+| 4 | JEN! | Vocal | High preamp (+26dB), also plays flute (21) |
+| 5 | Sara | Vocal | High preamp (+35dB) - quiet/low-output mic |
+| 6 | Jill | Vocal | |
+| 7 | Kat | Vocal | |
+| 8 | John/Brian | Pastor speaking | Headset mic, rotates weekly |
+| 9 | Announcements | Speaking | |
+| 10-11 | Aux (phone) | Phone/Zoom | Usually muted |
+| 12-13 | Ambient L/R | Room mics | Livestream only, not FOH |
+| 14-15 | Computer L/R | Playback | |
+| 16 | (unused) | | |
+
+**Channels 17-32: Instruments**
+| Ch | Name | Source | Notes |
+|----|------|--------|-------|
+| 17-18 | Piano low/high | 6ft grand | Stereo condensers, low/high string split |
+| 19 | Tammy Guitar | Acoustic | |
+| 20 | Front Guitar | Acoustic | Not always used |
+| 21 | Flute-Jen | Flute | Jennifer, +18dB preamp |
+| 22 | Floor Tom | Drums | |
+| 23 | Mid Tom | Drums | 14" rack |
+| 24 | Mid High Tom | Drums | 12" rack |
+| 25 | Snare | Drums | 14" |
+| 26 | Kick | Drums | 24" |
+| 27 | Hi-hats | Overhead L | Positioned near hats side |
+| 28 | Ride | Overhead R | Positioned near ride side |
+| 29-30 | KB-Left/Right | Electric keyboard | Stereo |
+| 31 | Bass | Bass guitar | |
+| 32 | Zach-John | Electric guitar | |
+
+**Drum Kit Details**: Custom shells (DW equivalent). 24" kick, 18" floor, 14"/12" racks, 14" snare. Cymbals: 16"/18" Sabian AAX Explosion crashes, 21" ride (unfinished bell), Zildjian Mastersound hats. Players use bamboo, synthetic rods, brushes, light maple sticks. Mics capture attack transients lost in gentle playing.
+
+### Buses & Effects
+- **Drum Bus**: Routed to Ultimo compressor plugin
+- **Vocal Bus**: Routed to stereo exciter
+- **Reverb 1**: Auditorium (FOH) settings
+- **Reverb 2**: Livestream settings (different decay/mix)
+- **Livestream Matrix**: Separate output with LF compensation (inverse of master shelf cut)
+
+### DCA Groups
+| DCA | Name | Contents |
+|-----|------|----------|
+| 1 | Vox | All singing vocals |
+| 2 | Speaking | Pastor, announcements |
+| 3 | Inst | All instruments |
+| 4 | Aux | Auxiliary inputs |
+| 5 | Monitors | Monitor sends |
+
+### Mic & Input Details
+- **Vocals**: TODO - get specific mic models per channel from user
+- **Piano (17-18)**: AKG C02 pencil condensers (small diaphragm)
+- **Drums**: NADY kit (budget, but functional for capturing transients)
+- **Bass (31)**: DI → Ultimo compressor plugin with extreme settings (intentional fuzz/distortion)
+- **Electric guitar (32)**: DI → guitar amp plugin
+
+### Known Problem Areas
+- **Low G on bass** (~49Hz or 98Hz) hits room resonant frequency hard
+- **Keyboard (29-30)**: Difficult to sit in mix - either too loud or inaudible. Likely frequency masking with piano/guitars.
+
+### Personnel Notes
+- **Vocalists**: Generally quiet singers with low-output mics = high preamp gains needed. Easier to get clean signal.
+- **Drummers**: Classically trained, masterful restraint. No cage needed. Gentle playing style requires close mics to capture transients.
+
+### Reminders
+- [ ] Get vocal mic specs per channel from user
+
+---
+
 ## Channel Parsing
 
 Scripts accept flexible channel input:
@@ -79,6 +171,24 @@ For raw control: `python scripts/control.py --raw <address> <value>`
 - EQ band gain: `/ch/01/eq/2/g` (bands 1-4)
 - Main fader: `/main/st/mix/fader`
 
+## Real-Time Meter & RTA Data
+
+**TODO: When connected to mixer, implement real meter/RTA subscriptions using protocol below.**
+
+**IMPORTANT: monitor.py uses fader positions as proxy. This is NOT acceptable - must use real meter data.**
+
+### Quick Reference
+
+| What | Command/Address |
+|------|-----------------|
+| RTA spectrum (100 bins) | `/batchsubscribe` meter batch 4 |
+| Set RTA source channel | `/-prefs/rta/source` |
+| Keep-alive (every <10s) | `/xremote` |
+
+### Protocol Docs
+- [X32 OSC Protocol PDF](https://x32ram.com/wp-content/uploads/download-files/X32-OSC.pdf) - Full meter format specs
+- [pmaillot/X32-Behringer](https://github.com/pmaillot/X32-Behringer) - Reference implementations
+
 ---
 
-*Last Updated: 2026-01-11*
+*Last Updated: 2026-01-12*
