@@ -5,6 +5,8 @@ Python scripts for autonomous control of Behringer X-32 digital mixer via OSC pr
 **IMPORTANT: Virtual environment is set up at `venv/` - dependencies already installed**
 **IMPORTANT: Configure `config.json` with mixer IP before running any scripts**
 
+**WARNING: If query results show all default/empty values (fader 0.0, empty names, no EQ), the mixer is probably not connected. The behringer_mixer library silently returns defaults instead of erroring on connection failure.**
+
 ## Bash Commands
 
 Always run from project directory with venv activated:
@@ -141,10 +143,33 @@ source venv/bin/activate
 
 ### Personnel Notes
 - **Vocalists**: Generally quiet singers with low-output mics = high preamp gains needed. Easier to get clean signal.
+  - **Altos**: Tammy, Sara, Kat, Jill, Jen (HPF ~120-150Hz safe)
+  - **Baritones**: Bart, John (HPF ~80-100Hz)
+  - **Tenors**: Randy, Ryan (HPF ~100-120Hz)
 - **Drummers**: Classically trained, masterful restraint. No cage needed. Gentle playing style requires close mics to capture transients.
+
+### Stage Layout (from booth perspective, L to R)
+```
+[LEFT]                                                    [RIGHT]
+Tammy          Singers/       Drums    Bass/Electric    Flute/    Kat
+(piano+vox)    Acoustic Gtr            John (vox)       Violin    (keys+vox)
+               (behind piano)
+```
+- Tammy's vocal mic likely picks up piano bleed
+- Singers behind piano may pick up piano in their mics
+- Flute/violin on C02 condenser
+
+### Monitors
+- All in-ear monitors (IEMs) - no wedges
+
+### Gain Structure
+- Target faders at unity (0dB)
 
 ### Reminders
 - [ ] Get vocal mic specs per channel from user
+- [ ] Check master LF shelf settings (freq/dB) on first connection
+
+**NEVER save scenes. Do not offer. User uses one scene and manages it manually.**
 
 ---
 
