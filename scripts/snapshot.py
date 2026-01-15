@@ -19,7 +19,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import load_config, get_mixer, get_snapshot_dir, format_db
+from common import load_config, get_mixer, get_snapshot_dir, format_db, get_state_value
 
 
 async def capture_snapshot(mixer, sections=None):
@@ -108,33 +108,34 @@ async def capture_channel(state, ch_addr):
     """
     try:
         # Basic info
-        fader = state.get(f"{ch_addr}/mix/fader", 0.0)
-        name = state.get(f"{ch_addr}/config/name", "")
-        mute = state.get(f"{ch_addr}/mix/on", 1) == 0
-        color = state.get(f"{ch_addr}/config/color", 0)
+        fader = get_state_value(state, ch_addr, "mix_fader", 0.0)
+        fader_db = get_state_value(state, ch_addr, "mix_fader_db", None)
+        name = get_state_value(state, ch_addr, "config_name", "")
+        mute = get_state_value(state, ch_addr, "mix_on", True) == False
+        color = get_state_value(state, ch_addr, "config_color", 0)
 
         channel_data = {
             "name": name,
             "fader": round(fader, 3),
-            "fader_db": format_db(fader),
+            "fader_db": f"{fader_db} dB" if fader_db is not None else format_db(fader),
             "mute": mute,
             "color": color
         }
 
-        # EQ (4 bands)
-        eq_on = state.get(f"{ch_addr}/eq/on", 0) == 1
+        # EQ (4 bands) - library uses eq_1_g format
+        eq_on = get_state_value(state, ch_addr, "eq_on", False)
         eq_bands = []
         for band_num in range(1, 5):
             try:
-                freq = state.get(f"{ch_addr}/eq/{band_num}/f", 0.5)
-                gain = state.get(f"{ch_addr}/eq/{band_num}/g", 0.5)
-                q = state.get(f"{ch_addr}/eq/{band_num}/q", 0.5)
+                freq = get_state_value(state, ch_addr, f"eq_{band_num}_f", 0.5)
+                gain = get_state_value(state, ch_addr, f"eq_{band_num}_g", 0.5)
+                q = get_state_value(state, ch_addr, f"eq_{band_num}_q", 0.5)
 
                 eq_bands.append({
                     "band": band_num,
-                    "freq": round(freq, 3),
-                    "gain": round(gain, 3),
-                    "q": round(q, 3)
+                    "freq": round(freq, 3) if freq else 0.5,
+                    "gain": round(gain, 3) if gain else 0.5,
+                    "q": round(q, 3) if q else 0.5
                 })
             except:
                 pass
@@ -147,18 +148,18 @@ async def capture_channel(state, ch_addr):
 
         # Dynamics (gate and comp)
         try:
-            gate_on = state.get(f"{ch_addr}/gate/on", 0) == 1
-            comp_on = state.get(f"{ch_addr}/dyn/on", 0) == 1
+            gate_on = get_state_value(state, ch_addr, "gate_on", False)
+            comp_on = get_state_value(state, ch_addr, "dyn_on", False)
 
             channel_data["dynamics"] = {
                 "gate": {
                     "on": gate_on,
-                    "threshold": state.get(f"{ch_addr}/gate/thr", 0.5)
+                    "threshold": get_state_value(state, ch_addr, "gate_thr", 0.5)
                 },
                 "comp": {
                     "on": comp_on,
-                    "threshold": state.get(f"{ch_addr}/dyn/thr", 0.5),
-                    "ratio": state.get(f"{ch_addr}/dyn/ratio", 0.5)
+                    "threshold": get_state_value(state, ch_addr, "dyn_thr", 0.5),
+                    "ratio": get_state_value(state, ch_addr, "dyn_ratio", 0.5)
                 }
             }
         except:

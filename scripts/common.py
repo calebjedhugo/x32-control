@@ -2,6 +2,7 @@
 Common utilities for X-32 mixer control scripts.
 """
 
+import asyncio
 import json
 import math
 import os
@@ -77,6 +78,8 @@ async def get_mixer(config: Optional[Dict[str, Any]] = None):
     try:
         await mixer.start()
         await mixer.validate_connection()
+        await mixer.reload()  # Load initial state from mixer
+        await asyncio.sleep(2)  # Wait for responses
         return mixer
     except Exception as e:
         print(f"Error connecting to mixer at {config['mixer_ip']}:{config['mixer_port']}", file=sys.stderr)
@@ -260,3 +263,37 @@ def get_snapshot_dir() -> Path:
     snapshot_dir = PROJECT_ROOT / config["snapshot_dir"]
     snapshot_dir.mkdir(exist_ok=True)
     return snapshot_dir
+
+
+def state_key(base_addr: str, prop: str) -> str:
+    """
+    Convert OSC-style address to behringer_mixer state key.
+
+    Examples:
+        state_key("/ch/01", "mix/fader") → "/ch/1/mix_fader"
+        state_key("/ch/05", "config/name") → "/ch/5/config_name"
+        state_key("/bus/03", "mix/on") → "/bus/3/mix_on"
+    """
+    # Remove zero-padding from channel/bus numbers
+    import re
+    base_addr = re.sub(r'/(\d+)', lambda m: f'/{int(m.group(1))}', base_addr)
+    # Replace slashes in property with underscores
+    prop = prop.replace('/', '_')
+    return f"{base_addr}/{prop}"
+
+
+def get_state_value(state: dict, base_addr: str, prop: str, default=None):
+    """
+    Get value from mixer state using OSC-style addressing.
+
+    Args:
+        state: Mixer state dictionary
+        base_addr: Base address like "/ch/01" or "/bus/05"
+        prop: Property path like "mix/fader" or "config/name"
+        default: Default value if not found
+
+    Returns:
+        Value from state or default
+    """
+    key = state_key(base_addr, prop)
+    return state.get(key, default)

@@ -30,6 +30,10 @@ wheels/
 logs/
 *.log
 
+# Captures and snapshots
+snapshots/
+captures/
+
 # IDE
 .vscode/
 .idea/

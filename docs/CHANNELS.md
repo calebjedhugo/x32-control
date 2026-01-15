@@ -12,7 +12,7 @@ Read this when you need detailed info about specific channels, personnel, or sta
 | 3 | John | Vocal | High preamp (+39dB) - quiet mic |
 | 4 | JEN! | Vocal | High preamp (+26dB), also plays flute (21) |
 | 5 | Sara | Vocal | High preamp (+35dB) - quiet mic |
-| 6 | Jill | Vocal | |
+| 6 | Bart | Vocal | |
 | 7 | Kat | Vocal | |
 | 8 | John/Brian | Pastor speaking | Headset mic, rotates weekly |
 | 9 | Announcements | Speaking | |
@@ -58,7 +58,9 @@ Read this when you need detailed info about specific channels, personnel, or sta
 - **Livestream Matrix**: Separate output with LF compensation
 
 ## Mic Details
-- **Vocals**: TODO - get specific mic models
+- **Tammy (ch1)**: Sennheiser e945
+- **Randy (ch2), John (ch3), Ryan (ch4), Sara (ch5)**: CPG XD2
+- **Bart (ch6), Kat (ch7)**: Shure SM58
 - **Piano (17-18)**: AKG C02 pencil condensers
 - **Drums**: NADY kit (budget, but captures transients)
 - **Flute (21)**: C02 condenser

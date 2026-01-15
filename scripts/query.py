@@ -21,7 +21,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import load_config, get_mixer, parse_channel, parse_bus, format_db, format_output
+from common import load_config, get_mixer, parse_channel, parse_bus, format_db, format_output, get_state_value
 
 
 async def query_address(state, address):
@@ -56,16 +56,17 @@ async def query_channel_overview(state, ch_addr):
         Dictionary with channel info
     """
     try:
-        fader = state.get(f"{ch_addr}/mix/fader", 0.0)
-        name = state.get(f"{ch_addr}/config/name", "")
-        mute = state.get(f"{ch_addr}/mix/on", 1) == 0
-        color = state.get(f"{ch_addr}/config/color", 0)
+        fader = get_state_value(state, ch_addr, "mix_fader", 0.0)
+        fader_db = get_state_value(state, ch_addr, "mix_fader_db", None)
+        name = get_state_value(state, ch_addr, "config_name", "")
+        mute = get_state_value(state, ch_addr, "mix_on", True) == False
+        color = get_state_value(state, ch_addr, "config_color", 0)
 
         return {
             "channel": ch_addr,
             "name": name,
             "fader": round(fader, 3),
-            "fader_db": format_db(fader),
+            "fader_db": f"{fader_db} dB" if fader_db is not None else format_db(fader),
             "mute": mute,
             "color": color
         }

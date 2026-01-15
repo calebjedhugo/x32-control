@@ -54,8 +54,8 @@
 
 ## Before Making Changes
 
-1. **Read docs/VENUE.md first** - Room context is critical for any suggestion
-2. **Check current state** - query.py
+1. **Ask for screenshots** - X32 Edit screenshots show current state (library can't pull channel names)
+2. **Read docs/VENUE.md first** - Room context is critical for any suggestion
 3. **Tell user your plan** - "I'll bump the kick up 3dB"
 4. **Get confirmation** - wait for yes/go ahead
 5. **Make change** - control.py

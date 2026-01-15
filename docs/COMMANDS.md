@@ -28,13 +28,12 @@ Scripts accept flexible input:
 
 ## Fader Values
 
-| Value | dB |
-|-------|-----|
-| 0.0 | -∞ (silence) |
-| 0.75 | 0 dB (unity) |
-| 1.0 | +10 dB (max) |
+Always use dB values when communicating:
+- **0** = unity (0 dB)
+- **-inf** = silence
+- **+10** = max
 
-Scripts accept: `--fader 0.75` or `--fader -10dB`
+Scripts accept: `--fader 0dB` or `--fader -10dB`
 
 ## Common OSC Addresses
 

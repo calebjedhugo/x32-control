@@ -29,7 +29,7 @@ from typing import Dict, List, Any, Optional
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import load_config, get_mixer, fader_to_db, format_db
+from common import load_config, get_mixer, fader_to_db, format_db, get_state_value
 
 # X-32 meter indices
 METER_CHANNEL_PRE = 0   # Ch 1-32 pre-fader + Aux 1-8 (70 values)
@@ -232,11 +232,12 @@ class MeterCapture:
 
     def subscribe_meters(self):
         """Subscribe to meter data streams."""
-        # Request meter data - X-32 uses /meters with index
-        # The mixer will start sending meter data after this
-        self.send_osc('/meters', 0)  # Channel pre-fader
-        self.send_osc('/meters', 1)  # Channel post-fader
-        self.send_osc('/meters', 2)  # Buses + mains
+        # X-32 uses /batchsubscribe to subscribe to meter updates
+        # Format: /batchsubscribe ,ssiiii [alias] [address] [start] [end] [interval]
+        # Interval in frames (1 = every frame, higher = less frequent)
+        self.send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)  # Channel pre-fader
+        self.send_osc('/batchsubscribe', '/meters/1', '/meters/1', 0, 0, 2)  # Channel post-fader
+        self.send_osc('/batchsubscribe', '/meters/2', '/meters/2', 0, 0, 2)  # Buses + mains
 
     def subscribe_rta(self, source_channel: int = 0):
         """
@@ -248,8 +249,8 @@ class MeterCapture:
         # Set RTA source
         self.send_osc('/-prefs/rta/source', source_channel)
         self.rta_source = source_channel
-        # Request RTA meters
-        self.send_osc('/meters', 4)
+        # Subscribe to RTA meters
+        self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
 
     def receive_data(self) -> Optional[tuple]:
         """
@@ -412,11 +413,11 @@ class MeterCapture:
                 self.send_xremote()
                 last_xremote = current_time
 
-            # Re-request meters every 100ms
+            # Re-request meters every 100ms (keeps subscription alive)
             if current_time - last_meter_request > 0.1:
                 self.subscribe_meters()
                 if not rta_sweep or initial_scan_complete:
-                    self.send_osc('/meters', 4)  # RTA
+                    self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)  # RTA
                 last_meter_request = current_time
 
             # Initial scan phase - just collect meter data to find active channels
@@ -472,39 +473,36 @@ class MeterCapture:
                         'address': address,
                     }
 
-                    # Determine meter type from data length
+                    # Determine meter type from address (more reliable than data length)
                     num_values = len(data) // 2
 
-                    if num_values >= 70:  # Channel meters
+                    if address == '/meters/4':  # RTA
+                        sample['type'] = 'rta'
+                        sample['rta_source'] = self.rta_source
+                        parsed = parse_meter_blob(data, METER_RTA)
+                        sample['data'] = parsed
+                    elif address in ['/meters/0', '/meters/1'] and num_values >= 70:  # Channel meters
                         sample['type'] = 'channels'
                         parsed = parse_meter_blob(data, METER_CHANNEL_PRE)
                         sample['data'] = parsed
                         # Update activity tracking
                         self.update_channel_activity(parsed)
-
-                    elif num_values >= 34:  # Bus meters
+                    elif address == '/meters/2' and num_values >= 34:  # Bus meters
                         sample['type'] = 'buses'
                         sample['data'] = parse_meter_blob(data, METER_BUS)
-
-                    elif num_values == 100:  # RTA
-                        sample['type'] = 'rta'
-                        sample['rta_source'] = self.rta_source
-                        parsed = parse_meter_blob(data, METER_RTA)
-                        sample['data'] = parsed
-
-                        # Evaluate RTA quality for sweep mode
-                        if rta_sweep and self.rta_source > 0:
-                            is_good = self.evaluate_rta_capture(
-                                parsed, self.rta_source, sample['timestamp_ms']
-                            )
-                            if not is_good and not retry_phase:
-                                # Queue for retry if not already queued
-                                if self.rta_source not in self.rta_retry_queue:
-                                    self.rta_retry_queue.append(self.rta_source)
-
                     else:
                         sample['type'] = 'unknown'
                         sample['raw_values'] = num_values
+
+                    # Evaluate RTA quality for sweep mode (after RTA sample)
+                    if sample.get('type') == 'rta' and rta_sweep and self.rta_source > 0:
+                        is_good = self.evaluate_rta_capture(
+                            sample['data'], self.rta_source, sample['timestamp_ms']
+                        )
+                        if not is_good and not retry_phase:
+                            # Queue for retry if not already queued
+                            if self.rta_source not in self.rta_retry_queue:
+                                self.rta_retry_queue.append(self.rta_source)
 
                     self.samples.append(sample)
                     sample_count += 1
@@ -544,53 +542,55 @@ async def capture_channel_settings(mixer) -> Dict:
     for ch_num in range(1, 33):
         ch_addr = f"/ch/{ch_num:02d}"
         try:
+            fader = get_state_value(state, ch_addr, "mix_fader", 0.0)
+            fader_db = get_state_value(state, ch_addr, "mix_fader_db", None)
             ch_data = {
-                'name': state.get(f"{ch_addr}/config/name", ""),
-                'fader': round(state.get(f"{ch_addr}/mix/fader", 0.0), 3),
-                'fader_db': format_db(state.get(f"{ch_addr}/mix/fader", 0.0)),
-                'mute': state.get(f"{ch_addr}/mix/on", 1) == 0,
-                'pan': round(state.get(f"{ch_addr}/mix/pan", 0.5), 3),
-                'color': state.get(f"{ch_addr}/config/color", 0),
+                'name': get_state_value(state, ch_addr, "config_name", ""),
+                'fader': round(fader, 3),
+                'fader_db': f"{fader_db} dB" if fader_db is not None else format_db(fader),
+                'mute': get_state_value(state, ch_addr, "mix_on", True) == False,
+                'pan': round(get_state_value(state, ch_addr, "mix_pan", 0.5) or 0.5, 3),
+                'color': get_state_value(state, ch_addr, "config_color", 0),
             }
 
-            # EQ settings
-            eq_on = state.get(f"{ch_addr}/eq/on", 0) == 1
+            # EQ settings (library doesn't load these by default)
+            eq_on = get_state_value(state, ch_addr, "eq_on", False)
             eq_bands = []
             for band in range(1, 5):
                 eq_bands.append({
-                    'freq': round(state.get(f"{ch_addr}/eq/{band}/f", 0.5), 3),
-                    'gain': round(state.get(f"{ch_addr}/eq/{band}/g", 0.5), 3),
-                    'q': round(state.get(f"{ch_addr}/eq/{band}/q", 0.5), 3),
-                    'type': state.get(f"{ch_addr}/eq/{band}/type", 0),
+                    'freq': round(get_state_value(state, ch_addr, f"eq_{band}_f", 0.5) or 0.5, 3),
+                    'gain': round(get_state_value(state, ch_addr, f"eq_{band}_g", 0.5) or 0.5, 3),
+                    'q': round(get_state_value(state, ch_addr, f"eq_{band}_q", 0.5) or 0.5, 3),
+                    'type': get_state_value(state, ch_addr, f"eq_{band}_type", 0),
                 })
             ch_data['eq'] = {'on': eq_on, 'bands': eq_bands}
 
-            # Dynamics
+            # Dynamics (library doesn't load these by default)
             ch_data['gate'] = {
-                'on': state.get(f"{ch_addr}/gate/on", 0) == 1,
-                'threshold': round(state.get(f"{ch_addr}/gate/thr", 0.5), 3),
-                'range': round(state.get(f"{ch_addr}/gate/range", 0.5), 3),
-                'attack': round(state.get(f"{ch_addr}/gate/attack", 0.5), 3),
-                'hold': round(state.get(f"{ch_addr}/gate/hold", 0.5), 3),
-                'release': round(state.get(f"{ch_addr}/gate/release", 0.5), 3),
+                'on': get_state_value(state, ch_addr, "gate_on", False),
+                'threshold': round(get_state_value(state, ch_addr, "gate_thr", 0.5) or 0.5, 3),
+                'range': round(get_state_value(state, ch_addr, "gate_range", 0.5) or 0.5, 3),
+                'attack': round(get_state_value(state, ch_addr, "gate_attack", 0.5) or 0.5, 3),
+                'hold': round(get_state_value(state, ch_addr, "gate_hold", 0.5) or 0.5, 3),
+                'release': round(get_state_value(state, ch_addr, "gate_release", 0.5) or 0.5, 3),
             }
             ch_data['compressor'] = {
-                'on': state.get(f"{ch_addr}/dyn/on", 0) == 1,
-                'threshold': round(state.get(f"{ch_addr}/dyn/thr", 0.5), 3),
-                'ratio': round(state.get(f"{ch_addr}/dyn/ratio", 0.5), 3),
-                'attack': round(state.get(f"{ch_addr}/dyn/attack", 0.5), 3),
-                'hold': round(state.get(f"{ch_addr}/dyn/hold", 0.5), 3),
-                'release': round(state.get(f"{ch_addr}/dyn/release", 0.5), 3),
-                'knee': round(state.get(f"{ch_addr}/dyn/knee", 0.5), 3),
-                'mix': round(state.get(f"{ch_addr}/dyn/mix", 1.0), 3),
+                'on': get_state_value(state, ch_addr, "dyn_on", False),
+                'threshold': round(get_state_value(state, ch_addr, "dyn_thr", 0.5) or 0.5, 3),
+                'ratio': round(get_state_value(state, ch_addr, "dyn_ratio", 0.5) or 0.5, 3),
+                'attack': round(get_state_value(state, ch_addr, "dyn_attack", 0.5) or 0.5, 3),
+                'hold': round(get_state_value(state, ch_addr, "dyn_hold", 0.5) or 0.5, 3),
+                'release': round(get_state_value(state, ch_addr, "dyn_release", 0.5) or 0.5, 3),
+                'knee': round(get_state_value(state, ch_addr, "dyn_knee", 0.5) or 0.5, 3),
+                'mix': round(get_state_value(state, ch_addr, "dyn_mix", 1.0) or 1.0, 3),
             }
 
-            # Preamp
+            # Preamp (library doesn't load these by default)
             ch_data['preamp'] = {
-                'gain': round(state.get(f"{ch_addr}/preamp/trim", 0.5), 3),
-                'phantom': state.get(f"{ch_addr}/preamp/48v", 0) == 1,
-                'hpf_on': state.get(f"{ch_addr}/preamp/hpon", 0) == 1,
-                'hpf_freq': round(state.get(f"{ch_addr}/preamp/hpf", 0.0), 3),
+                'gain': round(get_state_value(state, ch_addr, "preamp_trim", 0.5) or 0.5, 3),
+                'phantom': get_state_value(state, ch_addr, "preamp_48v", False),
+                'hpf_on': get_state_value(state, ch_addr, "preamp_hpon", False),
+                'hpf_freq': round(get_state_value(state, ch_addr, "preamp_hpf", 0.0) or 0.0, 3),
             }
 
             settings['channels'][f'ch{ch_num:02d}'] = ch_data
@@ -602,32 +602,38 @@ async def capture_channel_settings(mixer) -> Dict:
     for bus_num in range(1, 17):
         bus_addr = f"/bus/{bus_num:02d}"
         try:
+            fader = get_state_value(state, bus_addr, "mix_fader", 0.0)
+            fader_db = get_state_value(state, bus_addr, "mix_fader_db", None)
             settings['buses'][f'bus{bus_num:02d}'] = {
-                'name': state.get(f"{bus_addr}/config/name", ""),
-                'fader': round(state.get(f"{bus_addr}/mix/fader", 0.0), 3),
-                'fader_db': format_db(state.get(f"{bus_addr}/mix/fader", 0.0)),
-                'mute': state.get(f"{bus_addr}/mix/on", 1) == 0,
+                'name': get_state_value(state, bus_addr, "config_name", ""),
+                'fader': round(fader, 3),
+                'fader_db': f"{fader_db} dB" if fader_db is not None else format_db(fader),
+                'mute': get_state_value(state, bus_addr, "mix_on", True) == False,
             }
         except:
             pass
 
     # Main
     try:
+        fader = get_state_value(state, "/main/st", "mix_fader", 0.0)
+        fader_db = get_state_value(state, "/main/st", "mix_fader_db", None)
         settings['main'] = {
-            'fader': round(state.get("/main/st/mix/fader", 0.0), 3),
-            'fader_db': format_db(state.get("/main/st/mix/fader", 0.0)),
+            'fader': round(fader, 3),
+            'fader_db': f"{fader_db} dB" if fader_db is not None else format_db(fader),
         }
     except:
         pass
 
-    # DCAs
+    # DCAs - library uses /dca/{num}/mix_fader format
     for dca_num in range(1, 9):
         try:
+            fader = state.get(f"/dca/{dca_num}/mix_fader", 0.0)
+            fader_db = state.get(f"/dca/{dca_num}/mix_fader_db", None)
             settings['dcas'][f'dca{dca_num}'] = {
-                'name': state.get(f"/dca/{dca_num}/config/name", f"DCA {dca_num}"),
-                'fader': round(state.get(f"/dca/{dca_num}/fader", 0.0), 3),
-                'fader_db': format_db(state.get(f"/dca/{dca_num}/fader", 0.0)),
-                'mute': state.get(f"/dca/{dca_num}/on", 1) == 0,
+                'name': state.get(f"/dca/{dca_num}/config_name", f"DCA {dca_num}"),
+                'fader': round(fader, 3),
+                'fader_db': f"{fader_db} dB" if fader_db is not None else format_db(fader),
+                'mute': state.get(f"/dca/{dca_num}/mix_on", True) == False,
             }
         except:
             pass
@@ -668,7 +674,7 @@ async def recapture_channels(config: Dict, channels: List[int], duration: float)
                     capture.send_xremote()
 
                 # Request meters
-                capture.send_osc('/meters', 4)
+                capture.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
 
                 result = capture.receive_data()
                 if result:
