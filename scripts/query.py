@@ -9,6 +9,11 @@ Usage:
     python query.py --channel 5 --eq
     python query.py --channel 5 --dynamics
     python query.py --bus 3
+    python query.py --main
+    python query.py --main --eq
+    python query.py --main --dynamics
+    python query.py --fx 1
+    python query.py --fxrtn 1
     python query.py --format plain
 """
 
@@ -46,7 +51,7 @@ async def query_address(state, address):
 
 async def query_channel_overview(state, ch_addr):
     """
-    Query channel overview (fader, mute, name, color).
+    Query channel overview (fader, mute, name, color, gain).
 
     Args:
         state: Mixer state
@@ -61,10 +66,12 @@ async def query_channel_overview(state, ch_addr):
         name = get_state_value(state, ch_addr, "config_name", "")
         mute = get_state_value(state, ch_addr, "mix_on", True) == False
         color = get_state_value(state, ch_addr, "config_color", 0)
+        gain = get_state_value(state, ch_addr, "headamp_gain", 0.0)
 
         return {
             "channel": ch_addr,
             "name": name,
+            "gain": round(gain, 3) if gain else 0.0,
             "fader": round(fader, 3),
             "fader_db": f"{fader_db} dB" if fader_db is not None else format_db(fader),
             "mute": mute,
@@ -176,6 +183,162 @@ async def query_channel_sends(state, ch_addr):
         return {"error": str(e)}
 
 
+async def query_main_overview(state):
+    """
+    Query main LR bus overview.
+
+    Args:
+        state: Mixer state
+
+    Returns:
+        Dictionary with main bus info
+    """
+    try:
+        main_addr = "/main/st"
+        fader = get_state_value(state, main_addr, "mix_fader", 0.0)
+        mute = get_state_value(state, main_addr, "mix_on", True) == False
+
+        return {
+            "target": "main/st",
+            "fader": round(fader, 3),
+            "fader_db": format_db(fader),
+            "mute": mute
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def query_main_eq(state):
+    """
+    Query main LR bus EQ settings (6 bands).
+
+    Args:
+        state: Mixer state
+
+    Returns:
+        Dictionary with EQ info
+    """
+    try:
+        main_addr = "/main/st"
+        eq_on = get_state_value(state, main_addr, "eq_on", 0) == 1
+        bands = []
+
+        for band_num in range(1, 7):  # Main has 6 bands
+            freq = get_state_value(state, main_addr, f"eq_{band_num}_f", 0.5)
+            gain = get_state_value(state, main_addr, f"eq_{band_num}_g", 0.5)
+            q = get_state_value(state, main_addr, f"eq_{band_num}_q", 0.5)
+
+            bands.append({
+                "band": band_num,
+                "freq": round(freq, 3) if freq else 0.5,
+                "gain": round(gain, 3) if gain else 0.5,
+                "q": round(q, 3) if q else 0.5
+            })
+
+        return {
+            "target": "main/st",
+            "eq": {
+                "on": eq_on,
+                "bands": bands
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def query_main_dynamics(state):
+    """
+    Query main LR bus dynamics.
+
+    Args:
+        state: Mixer state
+
+    Returns:
+        Dictionary with dynamics info
+    """
+    try:
+        main_addr = "/main/st"
+        comp_on = get_state_value(state, main_addr, "dyn_on", 0) == 1
+        comp_thr = get_state_value(state, main_addr, "dyn_thr", 0.5)
+        comp_ratio = get_state_value(state, main_addr, "dyn_ratio", 0.5)
+
+        return {
+            "target": "main/st",
+            "dynamics": {
+                "comp": {
+                    "on": comp_on,
+                    "threshold": round(comp_thr, 3) if comp_thr else 0.5,
+                    "ratio": round(comp_ratio, 3) if comp_ratio else 0.5
+                }
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def query_fx_slot(state, fx_num):
+    """
+    Query FX slot parameters.
+
+    Args:
+        state: Mixer state
+        fx_num: FX slot number (1-8)
+
+    Returns:
+        Dictionary with FX info
+    """
+    try:
+        fx_addr = f"/fx/{fx_num}"
+
+        # Get FX type
+        fx_type = get_state_value(state, fx_addr, "type", 0)
+
+        # Get first 24 parameters (most effects use fewer)
+        params = {}
+        for param_num in range(1, 25):
+            param_key = f"par_{param_num:02d}"
+            value = get_state_value(state, fx_addr, param_key, None)
+            if value is not None:
+                params[param_num] = round(value, 3)
+
+        return {
+            "fx_slot": fx_num,
+            "type": fx_type,
+            "parameters": params
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def query_fx_return(state, fxrtn_num):
+    """
+    Query FX return settings.
+
+    Args:
+        state: Mixer state
+        fxrtn_num: FX return number (1-8)
+
+    Returns:
+        Dictionary with FX return info
+    """
+    try:
+        fxrtn_addr = f"/fxrtn/{fxrtn_num:02d}"
+
+        fader = get_state_value(state, fxrtn_addr, "mix_fader", 0.0)
+        mute = get_state_value(state, fxrtn_addr, "mix_on", True) == False
+        name = get_state_value(state, fxrtn_addr, "config_name", "")
+
+        return {
+            "fx_return": fxrtn_num,
+            "name": name,
+            "fader": round(fader, 3),
+            "fader_db": format_db(fader),
+            "mute": mute
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Query X-32 mixer parameters")
     parser.add_argument(
@@ -192,19 +355,38 @@ async def main():
         help="Query bus overview"
     )
     parser.add_argument(
+        "--main",
+        action="store_true",
+        help="Query main LR bus (use with --eq or --dynamics for details)"
+    )
+    parser.add_argument(
         "--eq",
         action="store_true",
-        help="Query EQ settings (requires --channel)"
+        help="Query EQ settings (use with --channel or --main)"
     )
     parser.add_argument(
         "--dynamics",
         action="store_true",
-        help="Query dynamics settings (requires --channel)"
+        help="Query dynamics settings (use with --channel or --main)"
     )
     parser.add_argument(
         "--sends",
         action="store_true",
         help="Query bus sends (requires --channel)"
+    )
+    parser.add_argument(
+        "--fx",
+        type=int,
+        choices=range(1, 9),
+        metavar="1-8",
+        help="Query FX slot (1-8)"
+    )
+    parser.add_argument(
+        "--fxrtn",
+        type=int,
+        choices=range(1, 9),
+        metavar="1-8",
+        help="Query FX return (1-8)"
     )
     parser.add_argument(
         "--format", "-f",
@@ -216,11 +398,14 @@ async def main():
     args = parser.parse_args()
 
     # Validate arguments
-    if not args.addresses and not args.channel and not args.bus:
-        parser.error("Must specify addresses, --channel, or --bus")
+    if not args.addresses and not args.channel and not args.bus and not args.main and not args.fx and not args.fxrtn:
+        parser.error("Must specify addresses, --channel, --bus, --main, --fx, or --fxrtn")
 
-    if (args.eq or args.dynamics or args.sends) and not args.channel:
-        parser.error("--eq, --dynamics, and --sends require --channel")
+    if (args.eq or args.dynamics) and not (args.channel or args.main):
+        parser.error("--eq and --dynamics require --channel or --main")
+
+    if args.sends and not args.channel:
+        parser.error("--sends requires --channel")
 
     # Connect to mixer
     print(f"Connecting to mixer...", file=sys.stderr)
@@ -262,6 +447,23 @@ async def main():
                 sys.exit(1)
 
             result = await query_channel_overview(state, bus_addr)
+
+        # Query main LR bus
+        if args.main:
+            if args.eq:
+                result = await query_main_eq(state)
+            elif args.dynamics:
+                result = await query_main_dynamics(state)
+            else:
+                result = await query_main_overview(state)
+
+        # Query FX slot
+        if args.fx:
+            result = await query_fx_slot(state, args.fx)
+
+        # Query FX return
+        if args.fxrtn:
+            result = await query_fx_return(state, args.fxrtn)
 
         # Output result
         print(format_output(result, args.format))

@@ -38,15 +38,23 @@ METER_BUS = 2           # Bus 1-16 + Main L/R + Mono (34 values)
 METER_MATRIX = 3        # Matrix 1-6 + Mono (18 values)
 METER_RTA = 4           # 100 frequency bins (20Hz - 20kHz)
 
-# Activity detection thresholds
-INACTIVE_THRESHOLD_DB = -70  # Below this = completely inactive (ignore channel)
-WEAK_SIGNAL_THRESHOLD_DB = -40  # Below this during RTA = retry later
-RTA_MEANINGFUL_THRESHOLD_DB = -60  # RTA bins below this aren't meaningful
+# Activity detection thresholds (raw int16 values, not dB)
+# Raw meter values: 0 = silence, ~32767 = max, negative = treat as no signal
+INACTIVE_THRESHOLD_RAW = 500  # Below this = completely inactive (ignore channel)
+WEAK_SIGNAL_THRESHOLD_RAW = 3000  # Below this during RTA = retry later
+RTA_MEANINGFUL_THRESHOLD_RAW = 200  # RTA bins below this aren't meaningful
 
 # Drum channels get special treatment (transient sources need more capture time)
 DRUM_CHANNELS = {22, 23, 24, 25, 26, 27, 28}  # Floor tom, mid tom, mid-high tom, snare, kick, OH L, OH R
 DRUM_RTA_DWELL_SECONDS = 3.0  # Give drums 3 seconds to catch a hit
+VOCAL_RTA_DWELL_SECONDS = 1.25  # Vocals need time to catch a phrase, not a breath
 DEFAULT_RTA_DWELL_SECONDS = 0.5  # Other sources get 500ms
+
+# Patterns to detect vocal channels by name (case-insensitive)
+VOCAL_NAME_PATTERNS = [
+    'tammy', 'john', 'sara', 'bart', 'jill', 'kat', 'jen', 'pastor',  # Known people
+    'vox', 'vocal', 'voice', 'singer', 'lead', 'backup', 'bkup', 'bgv',  # Common labels
+]
 
 # RTA frequency bins (100 bins, roughly 1/3 octave spacing)
 RTA_FREQUENCIES = [
@@ -59,21 +67,24 @@ RTA_FREQUENCIES = [
 
 def meter_int_to_db(value: int) -> float:
     """
-    Convert X-32 meter int16 value to dB.
+    Convert X-32 meter int16 value to dB (APPROXIMATE - NOT CALIBRATED).
+
+    WARNING: This formula is a rough approximation and has NOT been calibrated
+    against actual signal levels. Use only for rough human-readable output,
+    never for thresholds or comparisons. Use raw values for all logic.
+
+    User's dB scale: 0 = unity, +10 = max, -70 = almost silent
 
     X-32 meters use int16 values where:
     - 0 = -inf (silence)
-    - ~16384 = ~0 dB
+    - ~16384 = ~0 dB (approximate)
     - Higher values = positive dB (clipping)
-
-    The exact mapping follows a log scale.
     """
     if value <= 0:
         return float('-inf')
 
-    # X-32 uses a specific log mapping
+    # X-32 uses a specific log mapping - THIS NEEDS CALIBRATION
     # Values are roughly: 10^((value/16384 - 1) * 4) for the main range
-    # This is an approximation - exact mapping may need calibration
     normalized = value / 32768.0  # 0.0 to 1.0
 
     if normalized <= 0:
@@ -107,46 +118,30 @@ def parse_meter_blob(data: bytes, meter_type: int) -> Dict[str, Any]:
             result['channels'] = {}
             for i in range(min(32, len(values))):
                 ch_num = i + 1
-                result['channels'][f'ch{ch_num:02d}'] = {
-                    'raw': values[i],
-                    'db': round(meter_int_to_db(values[i]), 1)
-                }
+                result['channels'][f'ch{ch_num:02d}'] = values[i]
 
             # Aux inputs (if present)
             result['aux'] = {}
             for i in range(32, min(40, len(values))):
                 aux_num = i - 31
-                result['aux'][f'aux{aux_num}'] = {
-                    'raw': values[i],
-                    'db': round(meter_int_to_db(values[i]), 1)
-                }
+                result['aux'][f'aux{aux_num}'] = values[i]
 
         elif meter_type == METER_BUS:
             # Bus 1-16, Main L, Main R, Mono
             result['buses'] = {}
             for i in range(min(16, len(values))):
                 bus_num = i + 1
-                result['buses'][f'bus{bus_num:02d}'] = {
-                    'raw': values[i],
-                    'db': round(meter_int_to_db(values[i]), 1)
-                }
+                result['buses'][f'bus{bus_num:02d}'] = values[i]
 
             if len(values) > 16:
                 result['main'] = {
-                    'L': {'raw': values[16], 'db': round(meter_int_to_db(values[16]), 1)},
-                    'R': {'raw': values[17] if len(values) > 17 else 0,
-                          'db': round(meter_int_to_db(values[17] if len(values) > 17 else 0), 1)}
+                    'L': values[16],
+                    'R': values[17] if len(values) > 17 else 0
                 }
 
         elif meter_type == METER_RTA:
-            # 100 frequency bins
-            result['rta'] = []
-            for i in range(min(100, len(values))):
-                result['rta'].append({
-                    'bin': i,
-                    'raw': values[i],
-                    'db': round(meter_int_to_db(values[i]), 1)
-                })
+            # 100 frequency bins - just raw values
+            result['rta'] = [values[i] for i in range(min(100, len(values)))]
 
     except Exception as e:
         result['error'] = str(e)
@@ -167,10 +162,11 @@ class MeterCapture:
         self.rta_source: int = 0  # Current RTA source channel
 
         # Activity tracking
-        self.channel_peak_db: Dict[int, float] = {}  # Track peak level seen per channel
+        self.channel_peak_raw: Dict[int, int] = {}  # Track peak raw value seen per channel
         self.active_channels: set = set()  # Channels with meaningful signal
         self.rta_captures: Dict[int, Dict] = {}  # Best RTA capture per channel
         self.rta_retry_queue: List[int] = []  # Channels to retry for RTA
+        self.vocal_channels: set = set()  # Channels identified as vocals (get longer dwell)
 
     def connect(self):
         """Create UDP socket for OSC communication."""
@@ -184,6 +180,36 @@ class MeterCapture:
         if self.sock:
             self.sock.close()
             self.sock = None
+
+    def identify_vocal_channels(self, channel_settings: Dict):
+        """
+        Identify vocal channels based on channel names.
+
+        Args:
+            channel_settings: Dict with channel data, e.g. {'ch01': {'name': 'Tammy', ...}}
+        """
+        self.vocal_channels = set()
+        for ch_key, ch_data in channel_settings.items():
+            name = ch_data.get('name', '').lower()
+            if not name:
+                continue
+            # Check if name matches any vocal pattern
+            for pattern in VOCAL_NAME_PATTERNS:
+                if pattern in name:
+                    ch_num = int(ch_key.replace('ch', ''))
+                    self.vocal_channels.add(ch_num)
+                    break
+        if self.vocal_channels:
+            print(f"Detected vocal channels: {sorted(self.vocal_channels)}", file=sys.stderr)
+
+    def get_dwell_time(self, channel: int) -> float:
+        """Get appropriate RTA dwell time for a channel."""
+        if channel in DRUM_CHANNELS:
+            return DRUM_RTA_DWELL_SECONDS
+        elif channel in self.vocal_channels:
+            return VOCAL_RTA_DWELL_SECONDS
+        else:
+            return DEFAULT_RTA_DWELL_SECONDS
 
     def send_osc(self, address: str, *args):
         """Send an OSC message."""
@@ -315,22 +341,21 @@ class MeterCapture:
         if 'channels' not in meter_data:
             return
 
-        for ch_key, ch_data in meter_data['channels'].items():
+        for ch_key, raw_value in meter_data['channels'].items():
             # Extract channel number
             ch_num = int(ch_key.replace('ch', ''))
-            db_level = ch_data.get('db', float('-inf'))
 
-            # Skip -inf
-            if db_level == float('-inf'):
+            # Skip negative values (no signal)
+            if raw_value <= 0:
                 continue
 
             # Update peak tracking
-            current_peak = self.channel_peak_db.get(ch_num, float('-inf'))
-            if db_level > current_peak:
-                self.channel_peak_db[ch_num] = db_level
+            current_peak = self.channel_peak_raw.get(ch_num, 0)
+            if raw_value > current_peak:
+                self.channel_peak_raw[ch_num] = raw_value
 
             # Mark as active if above threshold
-            if db_level > INACTIVE_THRESHOLD_DB:
+            if raw_value > INACTIVE_THRESHOLD_RAW:
                 self.active_channels.add(ch_num)
 
     def evaluate_rta_capture(self, rta_data: Dict, channel: int, timestamp_ms: int) -> bool:
@@ -342,25 +367,25 @@ class MeterCapture:
         if 'rta' not in rta_data:
             return False
 
-        # Calculate peak RTA level
-        peak_rta_db = max(
-            (bin_data.get('db', float('-inf')) for bin_data in rta_data['rta']),
-            default=float('-inf')
+        # Calculate peak RTA level (raw value)
+        peak_rta_raw = max(
+            (v for v in rta_data['rta'] if v > 0),
+            default=0
         )
 
         # Check if we have an existing capture for this channel
         existing = self.rta_captures.get(channel)
 
         # Store if better than existing or no existing
-        if existing is None or peak_rta_db > existing.get('peak_db', float('-inf')):
+        if existing is None or peak_rta_raw > existing.get('peak_raw', 0):
             self.rta_captures[channel] = {
                 'timestamp_ms': timestamp_ms,
-                'peak_db': peak_rta_db,
+                'peak_raw': peak_rta_raw,
                 'data': rta_data
             }
 
         # Return whether this is a good capture
-        return peak_rta_db > WEAK_SIGNAL_THRESHOLD_DB
+        return peak_rta_raw > WEAK_SIGNAL_THRESHOLD_RAW
 
     async def capture(self, duration: float, rta_sweep: bool = False) -> Dict:
         """
@@ -380,7 +405,7 @@ class MeterCapture:
             Dictionary with all captured data (inactive channels excluded)
         """
         self.samples = []
-        self.channel_peak_db = {}
+        self.channel_peak_raw = {}
         self.active_channels = set()
         self.rta_captures = {}
         self.rta_retry_queue = []
@@ -434,9 +459,12 @@ class MeterCapture:
                         print(f"  Found {len(rta_sweep_list)} active channels: {rta_sweep_list}", file=sys.stderr)
                         if active_drums:
                             print(f"  Drums ({active_drums}) will be captured last with {DRUM_RTA_DWELL_SECONDS}s dwell time", file=sys.stderr)
+                        active_vocals = [ch for ch in self.vocal_channels if ch in rta_sweep_list]
+                        if active_vocals:
+                            print(f"  Vocals ({active_vocals}) get {VOCAL_RTA_DWELL_SECONDS}s dwell time", file=sys.stderr)
                         # Start RTA on first active channel
                         first_ch = rta_sweep_list[0]
-                        current_rta_dwell = DRUM_RTA_DWELL_SECONDS if first_ch in DRUM_CHANNELS else DEFAULT_RTA_DWELL_SECONDS
+                        current_rta_dwell = self.get_dwell_time(first_ch)
                         self.subscribe_rta(first_ch)
                     else:
                         print(f"  No active channels found during initial scan", file=sys.stderr)
@@ -458,8 +486,7 @@ class MeterCapture:
 
                 if rta_sweep_index < len(rta_sweep_list):
                     next_channel = rta_sweep_list[rta_sweep_index]
-                    # Set dwell time based on whether this is a drum channel
-                    current_rta_dwell = DRUM_RTA_DWELL_SECONDS if next_channel in DRUM_CHANNELS else DEFAULT_RTA_DWELL_SECONDS
+                    current_rta_dwell = self.get_dwell_time(next_channel)
                     self.subscribe_rta(next_channel)
                     last_rta_switch = current_time
 
@@ -526,7 +553,7 @@ class MeterCapture:
             'duration_ms': int(duration * 1000),
             'active_channels': sorted(self.active_channels),
             'rta_captures': {
-                ch: {'peak_db': data['peak_db'], 'timestamp_ms': data['timestamp_ms']}
+                ch: {'peak_raw': data['peak_raw'], 'timestamp_ms': data['timestamp_ms']}
                 for ch, data in self.rta_captures.items()
             },
             'samples': self.samples
@@ -666,7 +693,7 @@ async def recapture_channels(config: Dict, channels: List[int], duration: float)
 
             start_time = time.time()
             best_capture = None
-            best_peak = float('-inf')
+            best_peak = 0
 
             while time.time() - start_time < dwell_time:
                 # Keep-alive
@@ -683,14 +710,14 @@ async def recapture_channels(config: Dict, channels: List[int], duration: float)
                         parsed = parse_meter_blob(data, METER_RTA)
                         if 'rta' in parsed:
                             peak = max(
-                                (b.get('db', float('-inf')) for b in parsed['rta']),
-                                default=float('-inf')
+                                (v for v in parsed['rta'] if v > 0),
+                                default=0
                             )
                             if peak > best_peak:
                                 best_peak = peak
                                 best_capture = {
                                     'timestamp_ms': int((time.time() - start_time) * 1000),
-                                    'peak_db': peak,
+                                    'peak_raw': peak,
                                     'data': parsed
                                 }
 
@@ -698,7 +725,7 @@ async def recapture_channels(config: Dict, channels: List[int], duration: float)
 
             if best_capture:
                 rta_results[ch_num] = best_capture
-                print(f"    Got capture with peak {best_peak:.1f} dB", file=sys.stderr)
+                print(f"    Got capture with peak raw {best_peak}", file=sys.stderr)
             else:
                 print(f"    No RTA data received for channel {ch_num}", file=sys.stderr)
 
@@ -737,7 +764,7 @@ def merge_recapture(original_path: Path, recapture_data: Dict, channels: List[in
     for ch_num, rta_data in recapture_data.items():
         ch_key = str(ch_num)
         original['meters']['rta_captures'][ch_key] = {
-            'peak_db': rta_data['peak_db'],
+            'peak_raw': rta_data['peak_raw'],
             'timestamp_ms': rta_data['timestamp_ms'],
             'recaptured': True
         }
@@ -885,6 +912,10 @@ musician play while capturing.
     print("Starting meter capture...", file=sys.stderr)
     capture = MeterCapture(config['mixer_ip'], config['mixer_port'])
 
+    # Identify vocal channels for longer dwell time
+    if settings.get('channels'):
+        capture.identify_vocal_channels(settings['channels'])
+
     try:
         capture.connect()
         capture.send_xremote()
@@ -940,7 +971,7 @@ musician play while capturing.
             'rta_sweep': args.rta_sweep,
             'rta_source': args.rta_source if not args.rta_sweep else 'sweep',
             'active_channels': sorted(active_channels),
-            'inactive_threshold_db': INACTIVE_THRESHOLD_DB,
+            'inactive_threshold_raw': INACTIVE_THRESHOLD_RAW,
         },
         'settings': settings,
         'meters': meter_data,

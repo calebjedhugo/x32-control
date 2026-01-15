@@ -3,14 +3,14 @@
 Set X-32 mixer parameters.
 
 Usage:
-    python control.py /ch/05/mix/fader 0.75
     python control.py --channel 5 --fader -10dB
-    python control.py --channel 5 --mute
-    python control.py --channel 5 --unmute
+    python control.py --channel 5 --gain-trim 0.5
     python control.py --channel 5 --eq-band 2 --gain 3.0
     python control.py --channel 5 --eq-on
-    python control.py --channel 5 --name "Vocals"
-    python control.py --raw /ch/05/eq/1/g 0.65
+    python control.py --main --eq-band 3 --gain 0.45
+    python control.py --main --comp-threshold 0.6
+    python control.py --fx 1 --fx-param 1 --fx-value 0.5
+    python control.py --fxrtn 1 --fader -10dB
     python control.py --channel 5 --fader -10dB --dry-run
 """
 
@@ -107,6 +107,11 @@ async def main():
         "--bus", "-b",
         help="Bus to control"
     )
+    parser.add_argument(
+        "--main",
+        action="store_true",
+        help="Control main LR bus (6-band EQ, dynamics)"
+    )
 
     # Fader control
     parser.add_argument(
@@ -114,30 +119,19 @@ async def main():
         help="Set fader (0.0-1.0 or -90dB to +10dB)"
     )
 
-    # Mute control
+    # Preamp gain
     parser.add_argument(
-        "--mute",
-        action="store_true",
-        help="Mute channel/bus"
-    )
-    parser.add_argument(
-        "--unmute",
-        action="store_true",
-        help="Unmute channel/bus"
-    )
-
-    # Name
-    parser.add_argument(
-        "--name", "-n",
-        help="Set channel/bus name"
+        "--gain-trim",
+        type=float,
+        help="Set preamp/input gain (0.0-1.0, channels only)"
     )
 
     # EQ control
     parser.add_argument(
         "--eq-band",
         type=int,
-        choices=[1, 2, 3, 4],
-        help="EQ band number (1-4)"
+        choices=[1, 2, 3, 4, 5, 6],
+        help="EQ band number (1-4 for channels, 1-6 for main)"
     )
     parser.add_argument(
         "--freq",
@@ -189,6 +183,36 @@ async def main():
         help="Send level (requires --send-bus)"
     )
 
+    # FX slot control
+    parser.add_argument(
+        "--fx",
+        type=int,
+        choices=range(1, 9),
+        metavar="1-8",
+        help="FX slot to control (1-8)"
+    )
+    parser.add_argument(
+        "--fx-param",
+        type=int,
+        choices=range(1, 65),
+        metavar="1-64",
+        help="FX parameter number (1-64, requires --fx)"
+    )
+    parser.add_argument(
+        "--fx-value",
+        type=float,
+        help="FX parameter value 0.0-1.0 (requires --fx and --fx-param)"
+    )
+
+    # FX return control
+    parser.add_argument(
+        "--fxrtn",
+        type=int,
+        choices=range(1, 9),
+        metavar="1-8",
+        help="FX return to control (1-8)"
+    )
+
     # Options
     parser.add_argument(
         "--dry-run",
@@ -210,14 +234,31 @@ async def main():
     elif args.channel or args.bus:
         # Channel/bus mode
         if not any([
-            args.fader, args.mute, args.unmute, args.name,
+            args.fader,
+            args.gain_trim,
             args.eq_band, args.eq_on, args.eq_off,
             args.comp_threshold, args.gate_threshold,
             args.send_bus
         ]):
-            parser.error("Must specify an operation (--fader, --mute, etc.)")
+            parser.error("Must specify an operation (--fader, --eq-band, etc.)")
+    elif args.main:
+        # Main LR bus mode
+        if not any([
+            args.fader,
+            args.eq_band, args.eq_on, args.eq_off,
+            args.comp_threshold
+        ]):
+            parser.error("--main requires --eq-band, --eq-on/off, --comp-threshold, or --fader")
+    elif args.fx:
+        # FX slot mode
+        if not (args.fx_param and args.fx_value is not None):
+            parser.error("--fx requires --fx-param and --fx-value")
+    elif args.fxrtn:
+        # FX return mode
+        if not args.fader:
+            parser.error("--fxrtn requires --fader")
     else:
-        parser.error("Must specify raw address or --channel/--bus")
+        parser.error("Must specify raw address, --channel, --bus, --main, --fx, or --fxrtn")
 
     # Connect to mixer
     print(f"Connecting to mixer...", file=sys.stderr)
@@ -236,7 +277,11 @@ async def main():
             print("Success")
             return
 
-        # Determine target address
+        # Execute operations
+        success = True
+        target_addr = None
+
+        # Determine target address for channel/bus operations
         if args.channel:
             try:
                 target_addr = parse_channel(args.channel)
@@ -250,52 +295,93 @@ async def main():
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
 
-        # Execute operations
-        success = True
+        # Channel/bus operations (require target_addr)
+        if target_addr:
+            # Fader
+            if args.fader:
+                try:
+                    fader_value = parse_fader_input(args.fader)
+                    await set_value(mixer, f"{target_addr}/mix/fader", fader_value, args.dry_run)
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    success = False
 
-        # Fader
-        if args.fader:
-            try:
-                fader_value = parse_fader_input(args.fader)
-                await set_value(mixer, f"{target_addr}/mix/fader", fader_value, args.dry_run)
-            except ValueError as e:
-                print(f"Error: {e}", file=sys.stderr)
-                success = False
+            # Preamp gain (headamp)
+            if args.gain_trim is not None:
+                await set_value(mixer, f"{target_addr}/headamp/gain", args.gain_trim, args.dry_run)
 
-        # Mute/Unmute
-        if args.mute:
-            await set_value(mixer, f"{target_addr}/mix/on", 0, args.dry_run)
-        elif args.unmute:
-            await set_value(mixer, f"{target_addr}/mix/on", 1, args.dry_run)
+            # EQ band
+            if args.eq_band:
+                if args.freq is not None:
+                    await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/f", args.freq, args.dry_run)
+                if args.gain is not None:
+                    await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/g", args.gain, args.dry_run)
+                if args.q is not None:
+                    await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/q", args.q, args.dry_run)
 
-        # Name
-        if args.name:
-            await set_value(mixer, f"{target_addr}/config/name", args.name, args.dry_run)
+            # EQ on/off
+            if args.eq_on:
+                await set_value(mixer, f"{target_addr}/eq/on", 1, args.dry_run)
+            elif args.eq_off:
+                await set_value(mixer, f"{target_addr}/eq/on", 0, args.dry_run)
 
-        # EQ band
-        if args.eq_band:
-            if args.freq is not None:
-                await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/f", args.freq, args.dry_run)
-            if args.gain is not None:
-                await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/g", args.gain, args.dry_run)
-            if args.q is not None:
-                await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/q", args.q, args.dry_run)
+            # Dynamics
+            if args.comp_threshold is not None:
+                await set_value(mixer, f"{target_addr}/dyn/thr", args.comp_threshold, args.dry_run)
+            if args.gate_threshold is not None:
+                await set_value(mixer, f"{target_addr}/gate/thr", args.gate_threshold, args.dry_run)
 
-        # EQ on/off
-        if args.eq_on:
-            await set_value(mixer, f"{target_addr}/eq/on", 1, args.dry_run)
-        elif args.eq_off:
-            await set_value(mixer, f"{target_addr}/eq/on", 0, args.dry_run)
+            # Bus send
+            if args.send_bus and args.level is not None:
+                await set_value(mixer, f"{target_addr}/mix/{args.send_bus:02d}/level", args.level, args.dry_run)
 
-        # Dynamics
-        if args.comp_threshold is not None:
-            await set_value(mixer, f"{target_addr}/dyn/thr", args.comp_threshold, args.dry_run)
-        if args.gate_threshold is not None:
-            await set_value(mixer, f"{target_addr}/gate/thr", args.gate_threshold, args.dry_run)
+        # Main LR bus operations
+        if args.main:
+            main_addr = "/main/st"
 
-        # Bus send
-        if args.send_bus and args.level is not None:
-            await set_value(mixer, f"{target_addr}/mix/{args.send_bus:02d}/level", args.level, args.dry_run)
+            # Fader
+            if args.fader:
+                try:
+                    fader_value = parse_fader_input(args.fader)
+                    await set_value(mixer, f"{main_addr}/mix/fader", fader_value, args.dry_run)
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    success = False
+
+            # EQ band (main has 6 bands)
+            if args.eq_band:
+                if args.freq is not None:
+                    await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/f", args.freq, args.dry_run)
+                if args.gain is not None:
+                    await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/g", args.gain, args.dry_run)
+                if args.q is not None:
+                    await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/q", args.q, args.dry_run)
+
+            # EQ on/off
+            if args.eq_on:
+                await set_value(mixer, f"{main_addr}/eq/on", 1, args.dry_run)
+            elif args.eq_off:
+                await set_value(mixer, f"{main_addr}/eq/on", 0, args.dry_run)
+
+            # Dynamics (compressor only on main)
+            if args.comp_threshold is not None:
+                await set_value(mixer, f"{main_addr}/dyn/thr", args.comp_threshold, args.dry_run)
+
+        # FX slot parameter
+        if args.fx and args.fx_param and args.fx_value is not None:
+            fx_addr = f"/fx/{args.fx}/par/{args.fx_param:02d}"
+            await set_value(mixer, fx_addr, args.fx_value, args.dry_run)
+
+        # FX return
+        if args.fxrtn:
+            fxrtn_addr = f"/fxrtn/{args.fxrtn:02d}"
+            if args.fader:
+                try:
+                    fader_value = parse_fader_input(args.fader)
+                    await set_value(mixer, f"{fxrtn_addr}/mix/fader", fader_value, args.dry_run)
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    success = False
 
         if success:
             print("Success")
