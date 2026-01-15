@@ -62,3 +62,15 @@ For raw control: `python scripts/control.py --raw <address> <value>`
   "mixer_port": 10023
 }
 ```
+
+## Technical Notes
+
+**IMPORTANT: behringer_mixer library quirks**
+
+| Issue | Solution |
+|-------|----------|
+| State keys differ from OSC | `/ch/01/mix/fader` → `/ch/1/mix_fader`. Use `get_state_value()` helper |
+| Meters need batchsubscribe | `send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)` |
+| RTA detection | Use address `/meters/4`, not data length |
+| Main fader writes | **NOT WORKING** - correct OSC address unknown |
+| EQ/dynamics reads | Not loaded by library (only basic channel info)

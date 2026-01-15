@@ -15,9 +15,9 @@
 | 1 | Tammy (lead) | 17-18 | Piano |
 | 2 | Randy | 19 | Tammy Guitar |
 | 3 | John | 20 | Front Guitar |
-| 4 | Jen | 21 | Flute (Jen) |
+| 4 | Ryan/Jen (varies) | 21 | Flute (Jen) |
 | 5 | Sara | 22 | Floor Tom |
-| 6 | Jill | 23 | Mid Tom |
+| 6 | Bart/Jill (varies) | 23 | Mid Tom |
 | 7 | Kat | 24 | Mid-High Tom |
 | 8 | Pastor | 25 | Snare |
 | 9 | Announcements | 26 | Kick |
@@ -112,6 +112,13 @@ python scripts/control.py --channel 26 --fader -5dB
 - Master bus has LF shelf cut for house (compensated for livestream)
 
 **NEVER save scenes. User manages one scene manually.**
+
+## Current Setup
+- **Mixer IP**: 192.168.0.222 (in config.json)
+- **Channel faders**: Working
+- **Reads/Capture**: Working (names, faders, meters, RTA)
+
+**IMPORTANT: Main fader control NOT working** - OSC address unknown, use board directly.
 
 ---
 *Read docs/*.md for detailed reference when needed*
