@@ -11,6 +11,27 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# X32 compressor ratio values (index -> actual ratio)
+# The X32 stores ratio as an index into this array
+COMP_RATIO_VALUES = [1.1, 1.3, 1.5, 2, 2.5, 3, 4, 5, 7, 10, 20, 100]
+
+def ratio_index_to_value(index: int) -> float:
+    """Convert X32 ratio index to actual ratio value."""
+    if 0 <= index < len(COMP_RATIO_VALUES):
+        return COMP_RATIO_VALUES[index]
+    return index  # Return raw if out of range
+
+def ratio_value_to_index(ratio: float) -> int:
+    """Convert ratio value to X32 index (finds closest match)."""
+    closest_idx = 0
+    closest_diff = abs(COMP_RATIO_VALUES[0] - ratio)
+    for idx, val in enumerate(COMP_RATIO_VALUES):
+        diff = abs(val - ratio)
+        if diff < closest_diff:
+            closest_diff = diff
+            closest_idx = idx
+    return closest_idx
+
 # Get project root (parent of scripts directory)
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -299,17 +320,20 @@ def get_state_value(state: dict, base_addr: str, prop: str, default=None):
     return state.get(key, default)
 
 
-async def reliable_query(mixer, address: str, retries: int = 3, delay: float = 0.15, default=None):
+async def reliable_query(mixer, address: str, retries: int = 5, delay: float = 0.15, default=None):
     """
     Query a mixer address with retries. First query often returns None.
 
     The behringer_mixer library's state() doesn't include EQ, dynamics, or FX data.
     Use mixer.query() directly for these parameters, but it needs warmup.
 
+    Note: Some parameters (eq/on, dyn/on, dyn/ratio) are particularly flaky
+    and may need more retries. Default is now 5 retries.
+
     Args:
         mixer: Connected mixer instance
         address: OSC address like "/ch/08/eq/1/g"
-        retries: Number of retry attempts
+        retries: Number of retry attempts (default 5)
         delay: Delay between retries in seconds
         default: Default value if all retries fail
 
@@ -334,3 +358,25 @@ async def warmup_connection(mixer):
     """
     await mixer.query('/ch/01/mix/fader')
     await asyncio.sleep(0.2)
+
+
+# HPF (High-Pass Filter) frequency values in Hz
+# The X32 stores HPF freq as a 0.0-1.0 value that maps to 20Hz-400Hz
+def hpf_value_to_hz(value: float) -> int:
+    """Convert X32 HPF value (0.0-1.0) to frequency in Hz (20-400)."""
+    # Logarithmic scale: 20Hz to 400Hz
+    if value <= 0:
+        return 20
+    if value >= 1:
+        return 400
+    # Log scale mapping
+    return int(20 * (400/20) ** value)
+
+def hpf_hz_to_value(hz: int) -> float:
+    """Convert frequency in Hz to X32 HPF value (0.0-1.0)."""
+    if hz <= 20:
+        return 0.0
+    if hz >= 400:
+        return 1.0
+    import math
+    return math.log(hz/20) / math.log(400/20)

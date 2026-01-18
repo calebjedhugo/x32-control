@@ -26,7 +26,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import load_config, get_mixer, parse_channel, parse_bus, format_db, format_output, get_state_value, reliable_query, warmup_connection
+from common import load_config, get_mixer, parse_channel, parse_bus, format_db, format_output, get_state_value, reliable_query, warmup_connection, ratio_index_to_value, hpf_value_to_hz
 
 
 async def query_address(state, address):
@@ -124,7 +124,7 @@ async def query_channel_eq(mixer, ch_addr):
 
 async def query_channel_dynamics(mixer, ch_addr):
     """
-    Query channel dynamics (gate, comp) using direct mixer queries.
+    Query channel dynamics (gate, comp, HPF) using direct mixer queries.
 
     Args:
         mixer: Connected mixer instance
@@ -136,16 +136,33 @@ async def query_channel_dynamics(mixer, ch_addr):
     try:
         ch_num = int(ch_addr.split('/')[-1])
 
+        # Gate
         gate_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/on', default=0) == 1
         gate_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/thr', default=0.5)
 
+        # Compressor
         comp_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/on', default=0) == 1
         comp_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/thr', default=0.5)
-        comp_ratio = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/ratio', default=0.5)
+        comp_ratio_idx = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/ratio', default=5)
+        comp_attack = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/attack', default=0.5)
+        comp_release = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/release', default=0.5)
+
+        # Convert ratio index to actual value
+        comp_ratio = ratio_index_to_value(int(comp_ratio_idx)) if comp_ratio_idx is not None else 3
+
+        # HPF (High-Pass Filter)
+        hpf_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/preamp/hpon', default=0) == 1
+        hpf_freq_val = await reliable_query(mixer, f'/ch/{ch_num:02d}/preamp/hpf', default=0.5)
+        hpf_freq_hz = hpf_value_to_hz(hpf_freq_val) if hpf_freq_val is not None else 80
 
         return {
             "channel": ch_addr,
             "dynamics": {
+                "hpf": {
+                    "on": hpf_on,
+                    "freq_value": round(hpf_freq_val, 3) if hpf_freq_val else 0.5,
+                    "freq_hz": hpf_freq_hz
+                },
                 "gate": {
                     "on": gate_on,
                     "threshold": round(gate_thr, 3) if gate_thr else 0.5
@@ -153,7 +170,9 @@ async def query_channel_dynamics(mixer, ch_addr):
                 "comp": {
                     "on": comp_on,
                     "threshold": round(comp_thr, 3) if comp_thr else 0.5,
-                    "ratio": round(comp_ratio, 3) if comp_ratio else 0.5
+                    "ratio": f"{comp_ratio}:1",
+                    "attack": round(comp_attack, 3) if comp_attack else 0.5,
+                    "release": round(comp_release, 3) if comp_release else 0.5
                 }
             }
         }
