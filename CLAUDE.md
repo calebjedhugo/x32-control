@@ -141,185 +141,55 @@ python scripts/control.py --main --comp-threshold 0.5
 - **Mixer IP**: 192.168.0.222 (in config.json)
 - **Channel faders**: Working (tested)
 - **Reads/Capture**: Working (names, faders, meters, RTA)
-- **EQ/Dynamics/Config**: Code exists, UNTESTED - may need fixes
-- **FX slots/returns**: Code exists, UNTESTED
-- **Main LR bus**: Code exists (6-band EQ, dynamics), UNTESTED
+- **EQ/Dynamics**: Working (tested Jan 18, 2026) - query.py and control.py updated
+- **FX slots**: Working (tested Jan 18, 2026) - parameters read/write correctly
+- **Main LR bus**: Working (tested Jan 18, 2026) - 6-band EQ, dynamics
 
 **IMPORTANT: Main fader control NOT recommended** - use board directly for main level.
 
-## January 18 Autonomous Test Plan
+## January 18, 2026 Test Results
 
-**Execute this immediately upon connecting to the mixer on January 18 - no asking, just do it.**
+**All tests passed.** EQ, dynamics, and FX control now working.
 
-Test targets:
-- **Channel 8**: EQ, dynamics, preamp gain (unused this week)
-- **FX slot 1**: Parameters and return (disconnected, safe to test)
-- **Main LR**: 6-band EQ, dynamics (fader read-only unless told otherwise)
+### What Was Fixed
 
----
+**Root cause:** The `behringer_mixer` library has limitations:
+- `state()` only returns fader, on/off, name, color - not EQ/dynamics/FX
+- `set_value()` silently fails for addresses not in its internal mapping
 
-### Phase 0: What We Know (from library research)
+**Fixes applied:**
+1. **common.py** - Added `reliable_query()` function that uses `mixer.query()` directly with retries (first query often returns None, needs warmup)
+2. **query.py** - Updated EQ, dynamics, and FX query functions to use `reliable_query()` instead of `state.get()`
+3. **control.py** - Changed `set_value()` to use `mixer.send()` directly instead of `mixer.set_value()`
 
-**Researched the behringer_mixer library source code.** Key findings:
+### Verified Working
 
-**READS - In `state()` (works):**
-- Channel/Bus/Main: fader, on/off, name, color
-- Headamps: gain, phantom (indexed 0-127)
+| Feature | Read | Write | Notes |
+|---------|------|-------|-------|
+| Channel EQ (4 bands) | ✓ | ✓ | freq, gain, Q all work |
+| Channel dynamics | ✓ | ✓ | gate and compressor |
+| Main LR EQ (6 bands) | ✓ | ✓ | All bands verified |
+| Main dynamics | ✓ | ✓ | Compressor threshold |
+| FX slot parameters | ✓ | ✓ | Minor FX-specific scaling |
+| FX return fader | ✓ | ✓ | Uses `/fxrtn/01/mix/fader` |
 
-**READS - NOT in `state()` (returns defaults):**
-- Channel EQ, dynamics, gate
-- Main EQ, dynamics
-- FX slots and returns
+### Technical Notes
 
-**Fix for reads:** Use `mixer.query(address)` directly - it can fetch any OSC address.
+- **OSC addresses**: Zero-padded channels required (`/ch/08/`, not `/ch/8/`)
+- **Query timing**: First query after connection returns None; `reliable_query()` handles this with retries
+- **FX parameter scaling**: Some FX parameters have internal scaling (e.g., 0.65 → 0.646)
 
-**WRITES - `set_value()` silently fails for unmapped addresses!**
-Line 270 in mixer_base.py: `if address_data:` - skips send if not mapped.
+### Meter Blob Fix (Jan 18, 2026)
 
-**Fix for writes:** Use `mixer.send(address, value)` directly instead of `set_value()`.
+Fixed meter data parsing in `capture.py`. The X32 meter blob structure is:
+- Index 0: Header (~17920)
+- Index 1: Header (0)
+- Index 2-17: Channels 1-16
+- Index 18: Header (~28603)
+- Index 19-34: Channels 17-32
+- Index 35+: Aux inputs
 
-**OSC address format confirmed:** Zero-padded channels, e.g., `/ch/08/eq/1/f`
-Source: [Patrick Maillot X32 docs](https://sites.google.com/site/patrickmaillot/x32)
-
----
-
-### Phase 1: Test Direct Queries AND Writes
-
-```bash
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
-
-python -c "
-import asyncio
-from scripts.common import get_mixer
-
-async def test():
-    mixer = await get_mixer()
-
-    # TEST READS with mixer.query()
-    print('=== Testing Reads ===')
-    result = await mixer.query('/ch/08/eq/1/f')
-    print(f'Ch8 EQ band 1 freq: {result}')
-
-    result = await mixer.query('/ch/08/eq/1/g')
-    print(f'Ch8 EQ band 1 gain: {result}')
-    original_gain = result[0] if result else 0.5
-
-    result = await mixer.query('/main/st/eq/1/g')
-    print(f'Main EQ band 1 gain: {result}')
-
-    result = await mixer.query('/fx/1/par/01')
-    print(f'FX1 param 1: {result}')
-
-    # TEST WRITES with mixer.send() (not set_value!)
-    print('=== Testing Write ===')
-    test_value = 0.55
-    await mixer.send('/ch/08/eq/1/g', test_value)
-    await asyncio.sleep(0.1)  # Wait for mixer to process
-
-    result = await mixer.query('/ch/08/eq/1/g')
-    print(f'After write - Ch8 EQ band 1 gain: {result}')
-
-    # Restore original
-    await mixer.send('/ch/08/eq/1/g', original_gain)
-    print(f'Restored to: {original_gain}')
-
-    await mixer.stop()
-
-asyncio.run(test())
-"
-```
-
-**If reads return `None` or wrong values:** Check `mixer.info_response` timing - may need longer sleep.
-**If writes don't change values:** Check OSC address format or try without zero-padding.
-
----
-
-### Phase 2: Fix Scripts (if Phase 1 works)
-
-**Fix query.py** - Replace `state.get()` with `mixer.query()` for EQ, dynamics, FX:
-```python
-# Before (broken):
-value = state.get(f"{ch_addr}/eq/{band}/f", 0.5)
-
-# After (works):
-result = await mixer.query(f'/ch/{ch_num:02d}/eq/{band}/f')
-value = result[0] if result else 0.5
-```
-
-**Fix control.py** - Replace `mixer.set_value()` with `mixer.send()` for EQ, dynamics, FX:
-```python
-# Before (silently fails):
-await mixer.set_value(f"{target_addr}/eq/{band}/g", value)
-
-# After (works):
-await mixer.send(f'/ch/{ch_num:02d}/eq/{band}/g', value)
-```
-
----
-
-### Phase 3: Test Writes (only after reads work)
-
-For each parameter type: query → small change → query to verify → restore
-
-**Channel 8:**
-```bash
-# EQ
-python scripts/query.py --channel 8 --eq
-python scripts/control.py --channel 8 --eq-band 2 --gain 0.55
-python scripts/query.py --channel 8 --eq
-# restore original
-
-# Dynamics
-python scripts/query.py --channel 8 --dynamics
-python scripts/control.py --channel 8 --comp-threshold 0.55
-python scripts/query.py --channel 8 --dynamics
-# restore original
-
-# Preamp gain
-python scripts/query.py --channel 8
-python scripts/control.py --channel 8 --gain-trim 0.55
-python scripts/query.py --channel 8
-# restore original
-```
-
-**FX Slot 1:**
-```bash
-python scripts/query.py --fx 1
-python scripts/control.py --fx 1 --fx-param 1 --fx-value 0.55
-python scripts/query.py --fx 1
-# restore original
-
-python scripts/query.py --fxrtn 1
-python scripts/control.py --fxrtn 1 --fader -10dB
-python scripts/query.py --fxrtn 1
-# restore original
-```
-
-**Main LR:**
-```bash
-python scripts/query.py --main --eq
-python scripts/control.py --main --eq-band 3 --gain 0.55
-python scripts/query.py --main --eq
-# restore original
-
-python scripts/query.py --main --dynamics
-python scripts/control.py --main --comp-threshold 0.55
-python scripts/query.py --main --dynamics
-# restore original
-```
-
-### Root Cause (confirmed via library source)
-
-**In library's `state()`:** fader, on/off, name, color (these work)
-
-**NOT in library's `state()`:** EQ, dynamics, FX (returns defaults because data isn't fetched)
-
-**Solution:** Use `mixer.query(address)` instead of `state.get()` for EQ/dynamics/FX. Phase 1 tests this.
-
-### Success Criteria:
-- All reads return real values (not defaults)
-- All writes are reflected when re-queried
-- Update this section with results
+Also fixed activity detection to use `abs(raw_value)` since audio oscillates positive and negative.
 
 ---
 *Read docs/*.md for detailed reference when needed*

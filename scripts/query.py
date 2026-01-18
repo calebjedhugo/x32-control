@@ -26,7 +26,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import load_config, get_mixer, parse_channel, parse_bus, format_db, format_output, get_state_value
+from common import load_config, get_mixer, parse_channel, parse_bus, format_db, format_output, get_state_value, reliable_query, warmup_connection
 
 
 async def query_address(state, address):
@@ -81,31 +81,34 @@ async def query_channel_overview(state, ch_addr):
         return {"error": str(e)}
 
 
-async def query_channel_eq(state, ch_addr):
+async def query_channel_eq(mixer, ch_addr):
     """
-    Query channel EQ settings.
+    Query channel EQ settings using direct mixer queries.
 
     Args:
-        state: Mixer state
-        ch_addr: Channel address
+        mixer: Connected mixer instance
+        ch_addr: Channel address like "/ch/08"
 
     Returns:
         Dictionary with EQ info
     """
     try:
-        eq_on = state.get(f"{ch_addr}/eq/on", 0) == 1
+        # Extract channel number for OSC address
+        ch_num = int(ch_addr.split('/')[-1])
+
+        eq_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/on', default=0) == 1
         bands = []
 
         for band_num in range(1, 5):
-            freq = state.get(f"{ch_addr}/eq/{band_num}/f", 0.5)
-            gain = state.get(f"{ch_addr}/eq/{band_num}/g", 0.5)
-            q = state.get(f"{ch_addr}/eq/{band_num}/q", 0.5)
+            freq = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/f', default=0.5)
+            gain = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/g', default=0.5)
+            q = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/q', default=0.5)
 
             bands.append({
                 "band": band_num,
-                "freq": round(freq, 3),
-                "gain": round(gain, 3),
-                "q": round(q, 3)
+                "freq": round(freq, 3) if freq else 0.5,
+                "gain": round(gain, 3) if gain else 0.5,
+                "q": round(q, 3) if q else 0.5
             })
 
         return {
@@ -119,36 +122,38 @@ async def query_channel_eq(state, ch_addr):
         return {"error": str(e)}
 
 
-async def query_channel_dynamics(state, ch_addr):
+async def query_channel_dynamics(mixer, ch_addr):
     """
-    Query channel dynamics (gate, comp).
+    Query channel dynamics (gate, comp) using direct mixer queries.
 
     Args:
-        state: Mixer state
-        ch_addr: Channel address
+        mixer: Connected mixer instance
+        ch_addr: Channel address like "/ch/08"
 
     Returns:
         Dictionary with dynamics info
     """
     try:
-        gate_on = state.get(f"{ch_addr}/gate/on", 0) == 1
-        gate_thr = state.get(f"{ch_addr}/gate/thr", 0.5)
+        ch_num = int(ch_addr.split('/')[-1])
 
-        comp_on = state.get(f"{ch_addr}/dyn/on", 0) == 1
-        comp_thr = state.get(f"{ch_addr}/dyn/thr", 0.5)
-        comp_ratio = state.get(f"{ch_addr}/dyn/ratio", 0.5)
+        gate_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/on', default=0) == 1
+        gate_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/thr', default=0.5)
+
+        comp_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/on', default=0) == 1
+        comp_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/thr', default=0.5)
+        comp_ratio = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/ratio', default=0.5)
 
         return {
             "channel": ch_addr,
             "dynamics": {
                 "gate": {
                     "on": gate_on,
-                    "threshold": round(gate_thr, 3)
+                    "threshold": round(gate_thr, 3) if gate_thr else 0.5
                 },
                 "comp": {
                     "on": comp_on,
-                    "threshold": round(comp_thr, 3),
-                    "ratio": round(comp_ratio, 3)
+                    "threshold": round(comp_thr, 3) if comp_thr else 0.5,
+                    "ratio": round(comp_ratio, 3) if comp_ratio else 0.5
                 }
             }
         }
@@ -208,25 +213,24 @@ async def query_main_overview(state):
         return {"error": str(e)}
 
 
-async def query_main_eq(state):
+async def query_main_eq(mixer):
     """
-    Query main LR bus EQ settings (6 bands).
+    Query main LR bus EQ settings (6 bands) using direct mixer queries.
 
     Args:
-        state: Mixer state
+        mixer: Connected mixer instance
 
     Returns:
         Dictionary with EQ info
     """
     try:
-        main_addr = "/main/st"
-        eq_on = get_state_value(state, main_addr, "eq_on", 0) == 1
+        eq_on = await reliable_query(mixer, '/main/st/eq/on', default=0) == 1
         bands = []
 
         for band_num in range(1, 7):  # Main has 6 bands
-            freq = get_state_value(state, main_addr, f"eq_{band_num}_f", 0.5)
-            gain = get_state_value(state, main_addr, f"eq_{band_num}_g", 0.5)
-            q = get_state_value(state, main_addr, f"eq_{band_num}_q", 0.5)
+            freq = await reliable_query(mixer, f'/main/st/eq/{band_num}/f', default=0.5)
+            gain = await reliable_query(mixer, f'/main/st/eq/{band_num}/g', default=0.5)
+            q = await reliable_query(mixer, f'/main/st/eq/{band_num}/q', default=0.5)
 
             bands.append({
                 "band": band_num,
@@ -246,21 +250,20 @@ async def query_main_eq(state):
         return {"error": str(e)}
 
 
-async def query_main_dynamics(state):
+async def query_main_dynamics(mixer):
     """
-    Query main LR bus dynamics.
+    Query main LR bus dynamics using direct mixer queries.
 
     Args:
-        state: Mixer state
+        mixer: Connected mixer instance
 
     Returns:
         Dictionary with dynamics info
     """
     try:
-        main_addr = "/main/st"
-        comp_on = get_state_value(state, main_addr, "dyn_on", 0) == 1
-        comp_thr = get_state_value(state, main_addr, "dyn_thr", 0.5)
-        comp_ratio = get_state_value(state, main_addr, "dyn_ratio", 0.5)
+        comp_on = await reliable_query(mixer, '/main/st/dyn/on', default=0) == 1
+        comp_thr = await reliable_query(mixer, '/main/st/dyn/thr', default=0.5)
+        comp_ratio = await reliable_query(mixer, '/main/st/dyn/ratio', default=0.5)
 
         return {
             "target": "main/st",
@@ -276,28 +279,25 @@ async def query_main_dynamics(state):
         return {"error": str(e)}
 
 
-async def query_fx_slot(state, fx_num):
+async def query_fx_slot(mixer, fx_num):
     """
-    Query FX slot parameters.
+    Query FX slot parameters using direct mixer queries.
 
     Args:
-        state: Mixer state
+        mixer: Connected mixer instance
         fx_num: FX slot number (1-8)
 
     Returns:
         Dictionary with FX info
     """
     try:
-        fx_addr = f"/fx/{fx_num}"
-
         # Get FX type
-        fx_type = get_state_value(state, fx_addr, "type", 0)
+        fx_type = await reliable_query(mixer, f'/fx/{fx_num}/type', default=0)
 
         # Get first 24 parameters (most effects use fewer)
         params = {}
         for param_num in range(1, 25):
-            param_key = f"par_{param_num:02d}"
-            value = get_state_value(state, fx_addr, param_key, None)
+            value = await reliable_query(mixer, f'/fx/{fx_num}/par/{param_num:02d}', default=None)
             if value is not None:
                 params[param_num] = round(value, 3)
 
@@ -310,12 +310,13 @@ async def query_fx_slot(state, fx_num):
         return {"error": str(e)}
 
 
-async def query_fx_return(state, fxrtn_num):
+async def query_fx_return(mixer, state, fxrtn_num):
     """
     Query FX return settings.
 
     Args:
-        state: Mixer state
+        mixer: Connected mixer instance
+        state: Mixer state (for fader/name which work from state)
         fxrtn_num: FX return number (1-8)
 
     Returns:
@@ -324,15 +325,19 @@ async def query_fx_return(state, fxrtn_num):
     try:
         fxrtn_addr = f"/fxrtn/{fxrtn_num:02d}"
 
-        fader = get_state_value(state, fxrtn_addr, "mix_fader", 0.0)
+        # Try state first for fader/name (usually works), fallback to query
+        fader = get_state_value(state, fxrtn_addr, "mix_fader", None)
+        if fader is None:
+            fader = await reliable_query(mixer, f'/fxrtn/{fxrtn_num:02d}/mix/fader', default=0.0)
+
         mute = get_state_value(state, fxrtn_addr, "mix_on", True) == False
         name = get_state_value(state, fxrtn_addr, "config_name", "")
 
         return {
             "fx_return": fxrtn_num,
             "name": name,
-            "fader": round(fader, 3),
-            "fader_db": format_db(fader),
+            "fader": round(fader, 3) if fader else 0.0,
+            "fader_db": format_db(fader) if fader else "-inf dB",
             "mute": mute
         }
     except Exception as e:
@@ -412,6 +417,9 @@ async def main():
     mixer = await get_mixer()
 
     try:
+        # Warm up connection for reliable queries
+        await warmup_connection(mixer)
+
         state = mixer.state()
         result = {}
 
@@ -430,9 +438,9 @@ async def main():
                 sys.exit(1)
 
             if args.eq:
-                result = await query_channel_eq(state, ch_addr)
+                result = await query_channel_eq(mixer, ch_addr)
             elif args.dynamics:
-                result = await query_channel_dynamics(state, ch_addr)
+                result = await query_channel_dynamics(mixer, ch_addr)
             elif args.sends:
                 result = await query_channel_sends(state, ch_addr)
             else:
@@ -451,19 +459,19 @@ async def main():
         # Query main LR bus
         if args.main:
             if args.eq:
-                result = await query_main_eq(state)
+                result = await query_main_eq(mixer)
             elif args.dynamics:
-                result = await query_main_dynamics(state)
+                result = await query_main_dynamics(mixer)
             else:
                 result = await query_main_overview(state)
 
         # Query FX slot
         if args.fx:
-            result = await query_fx_slot(state, args.fx)
+            result = await query_fx_slot(mixer, args.fx)
 
         # Query FX return
         if args.fxrtn:
-            result = await query_fx_return(state, args.fxrtn)
+            result = await query_fx_return(mixer, state, args.fxrtn)
 
         # Output result
         print(format_output(result, args.format))

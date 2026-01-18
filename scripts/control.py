@@ -28,7 +28,10 @@ from common import load_config, get_mixer, parse_channel, parse_bus, db_to_fader
 
 async def set_value(mixer, address, value, dry_run=False):
     """
-    Set a parameter value.
+    Set a parameter value using direct OSC send.
+
+    Uses mixer.send() instead of mixer.set_value() because the library's
+    set_value() silently fails for addresses not in its mapping (EQ, dynamics, FX).
 
     Args:
         mixer: Connected mixer instance
@@ -44,7 +47,8 @@ async def set_value(mixer, address, value, dry_run=False):
         return True
 
     try:
-        await mixer.set_value(address, value)
+        # Use send() directly - set_value() silently fails for unmapped addresses
+        await mixer.send(address, value)
         print(f"Set {address} = {value}", file=sys.stderr)
         return True
     except Exception as e:

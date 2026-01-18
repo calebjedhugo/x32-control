@@ -297,3 +297,40 @@ def get_state_value(state: dict, base_addr: str, prop: str, default=None):
     """
     key = state_key(base_addr, prop)
     return state.get(key, default)
+
+
+async def reliable_query(mixer, address: str, retries: int = 3, delay: float = 0.15, default=None):
+    """
+    Query a mixer address with retries. First query often returns None.
+
+    The behringer_mixer library's state() doesn't include EQ, dynamics, or FX data.
+    Use mixer.query() directly for these parameters, but it needs warmup.
+
+    Args:
+        mixer: Connected mixer instance
+        address: OSC address like "/ch/08/eq/1/g"
+        retries: Number of retry attempts
+        delay: Delay between retries in seconds
+        default: Default value if all retries fail
+
+    Returns:
+        First value from query result, or default
+    """
+    for attempt in range(retries):
+        result = await mixer.query(address)
+        if result is not None:
+            return result[0] if isinstance(result, tuple) else result
+        if attempt < retries - 1:
+            await asyncio.sleep(delay)
+    return default
+
+
+async def warmup_connection(mixer):
+    """
+    Send initial queries to warm up the mixer connection.
+
+    First query after connection often returns None. This sends a
+    throwaway query to establish communication.
+    """
+    await mixer.query('/ch/01/mix/fader')
+    await asyncio.sleep(0.2)

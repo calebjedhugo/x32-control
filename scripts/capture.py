@@ -102,10 +102,14 @@ def parse_meter_blob(data: bytes, meter_type: int) -> Dict[str, Any]:
     Parse meter blob data from X-32.
 
     Meter data comes as a blob of int16 values (big-endian).
-    """
-    # Skip first 4 bytes (blob length header if present)
-    # X-32 meter blobs are arrays of int16
 
+    X32 meter blob structure for /meters/0 and /meters/1 (channels):
+    - Index 0: Header byte (constant ~17920)
+    - Index 1-16: Channels 1-16
+    - Index 17: Header byte (constant ~28603)
+    - Index 18-33: Channels 17-32
+    - Index 34+: Aux inputs and other meters
+    """
     result = {}
 
     try:
@@ -114,34 +118,50 @@ def parse_meter_blob(data: bytes, meter_type: int) -> Dict[str, Any]:
         values = struct.unpack(f'>{num_values}h', data[:num_values * 2])
 
         if meter_type == METER_CHANNEL_PRE or meter_type == METER_CHANNEL_POST:
-            # Channels 1-32, then Aux 1-8
+            # X32 meter blob structure (empirically determined from live data):
+            # - Index 0: Header (constant ~17920)
+            # - Index 1: Header (constant 0)
+            # - Index 2-17: ch01-ch16
+            # - Index 18: Header (constant ~28603)
+            # - Index 19-34: ch17-ch32
             result['channels'] = {}
-            for i in range(min(32, len(values))):
-                ch_num = i + 1
-                result['channels'][f'ch{ch_num:02d}'] = values[i]
 
-            # Aux inputs (if present)
+            # Channels 1-16 (indices 2-17)
+            for i in range(16):
+                if i + 2 < len(values):
+                    ch_num = i + 1
+                    result['channels'][f'ch{ch_num:02d}'] = values[i + 2]
+
+            # Channels 17-32 (indices 19-34, skip header at 18)
+            for i in range(16):
+                if i + 19 < len(values):
+                    ch_num = i + 17
+                    result['channels'][f'ch{ch_num:02d}'] = values[i + 19]
+
+            # Aux inputs (after index 35: 2 headers + 16ch + 1 header + 16ch = 35)
             result['aux'] = {}
-            for i in range(32, min(40, len(values))):
-                aux_num = i - 31
-                result['aux'][f'aux{aux_num}'] = values[i]
+            aux_start = 35
+            for i in range(8):
+                if aux_start + i < len(values):
+                    result['aux'][f'aux{i + 1}'] = values[aux_start + i]
 
         elif meter_type == METER_BUS:
-            # Bus 1-16, Main L, Main R, Mono
+            # Bus meters - skip header at index 0
             result['buses'] = {}
-            for i in range(min(16, len(values))):
+            for i in range(min(16, len(values) - 1)):
                 bus_num = i + 1
-                result['buses'][f'bus{bus_num:02d}'] = values[i]
+                result['buses'][f'bus{bus_num:02d}'] = values[i + 1]
 
-            if len(values) > 16:
+            main_start = 17
+            if len(values) > main_start:
                 result['main'] = {
-                    'L': values[16],
-                    'R': values[17] if len(values) > 17 else 0
+                    'L': values[main_start],
+                    'R': values[main_start + 1] if len(values) > main_start + 1 else 0
                 }
 
         elif meter_type == METER_RTA:
-            # 100 frequency bins - just raw values
-            result['rta'] = [values[i] for i in range(min(100, len(values)))]
+            # RTA - skip header at index 0
+            result['rta'] = [values[i + 1] for i in range(min(100, len(values) - 1))]
 
     except Exception as e:
         result['error'] = str(e)
@@ -345,17 +365,16 @@ class MeterCapture:
             # Extract channel number
             ch_num = int(ch_key.replace('ch', ''))
 
-            # Skip negative values (no signal)
-            if raw_value <= 0:
-                continue
+            # Use absolute value - audio oscillates positive AND negative
+            abs_value = abs(raw_value)
 
             # Update peak tracking
             current_peak = self.channel_peak_raw.get(ch_num, 0)
-            if raw_value > current_peak:
-                self.channel_peak_raw[ch_num] = raw_value
+            if abs_value > current_peak:
+                self.channel_peak_raw[ch_num] = abs_value
 
             # Mark as active if above threshold
-            if raw_value > INACTIVE_THRESHOLD_RAW:
+            if abs_value > INACTIVE_THRESHOLD_RAW:
                 self.active_channels.add(ch_num)
 
     def evaluate_rta_capture(self, rta_data: Dict, channel: int, timestamp_ms: int) -> bool:
