@@ -96,21 +96,29 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
     fader = get_state_value(state, ch_addr, "mix_fader", 0.0)
     fader_db = get_state_value(state, ch_addr, "mix_fader_db", None)
 
+    # Check stereo link status (pairs are 1-2, 3-4, etc.)
+    if ch_num % 2 == 1:  # Odd channel - check link with next
+        link_addr = f'/config/chlink/{ch_num}-{ch_num+1}'
+    else:  # Even channel - check link with previous
+        link_addr = f'/config/chlink/{ch_num-1}-{ch_num}'
+    stereo_linked = await reliable_query(mixer, link_addr, default=0) == 1
+
     settings = {
         "name": get_state_value(state, ch_addr, "config_name", ""),
         "fader": round(fader, 3),
         "fader_db": f"{fader_db} dB" if fader_db is not None else format_db(fader),
         "mute": get_state_value(state, ch_addr, "mix_on", True) == False,
-        "pan": round(await reliable_query(mixer, f'{ch_addr}/mix/pan', default=0.5) or 0.5, 3),
+        "pan": round(val if (val := await reliable_query(mixer, f'{ch_addr}/mix/pan')) is not None else 0.5, 3),
+        "stereo_linked": stereo_linked,
     }
 
     # Preamp
     hpf_val = await reliable_query(mixer, f'{ch_addr}/preamp/hpf', default=0.0)
     settings["preamp"] = {
-        "gain": round(await reliable_query(mixer, f'{ch_addr}/preamp/trim', default=0.5) or 0.5, 3),
+        "gain": round(await reliable_query(mixer, f'{ch_addr}/preamp/trim', default=0.5), 3),
         "phantom": await reliable_query(mixer, f'{ch_addr}/preamp/48v', default=0) == 1,
         "hpf_on": await reliable_query(mixer, f'{ch_addr}/preamp/hpon', default=0) == 1,
-        "hpf_hz": hpf_value_to_hz(hpf_val) if hpf_val else 20,
+        "hpf_hz": hpf_value_to_hz(hpf_val) if hpf_val is not None else 20,
     }
 
     # EQ
@@ -119,26 +127,26 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
     for band in range(1, 5):
         eq_bands.append({
             "band": band,
-            "freq": round(await reliable_query(mixer, f'{ch_addr}/eq/{band}/f', default=0.5) or 0.5, 3),
-            "gain": round(await reliable_query(mixer, f'{ch_addr}/eq/{band}/g', default=0.5) or 0.5, 3),
-            "q": round(await reliable_query(mixer, f'{ch_addr}/eq/{band}/q', default=0.5) or 0.5, 3),
+            "freq": round(await reliable_query(mixer, f'{ch_addr}/eq/{band}/f', default=0.5), 3),
+            "gain": round(await reliable_query(mixer, f'{ch_addr}/eq/{band}/g', default=0.5), 3),
+            "q": round(await reliable_query(mixer, f'{ch_addr}/eq/{band}/q', default=0.5), 3),
         })
     settings["eq"] = {"on": eq_on, "bands": eq_bands}
 
     # Gate
     settings["gate"] = {
         "on": await reliable_query(mixer, f'{ch_addr}/gate/on', default=0) == 1,
-        "threshold": round(await reliable_query(mixer, f'{ch_addr}/gate/thr', default=0.5) or 0.5, 3),
+        "threshold": round(await reliable_query(mixer, f'{ch_addr}/gate/thr', default=0.5), 3),
     }
 
     # Compressor
     comp_ratio_idx = await reliable_query(mixer, f'{ch_addr}/dyn/ratio', default=5)
     settings["compressor"] = {
         "on": await reliable_query(mixer, f'{ch_addr}/dyn/on', default=0) == 1,
-        "threshold": round(await reliable_query(mixer, f'{ch_addr}/dyn/thr', default=0.5) or 0.5, 3),
-        "ratio": f"{ratio_index_to_value(int(comp_ratio_idx))}:1" if comp_ratio_idx else "3:1",
-        "attack": round(await reliable_query(mixer, f'{ch_addr}/dyn/attack', default=0.5) or 0.5, 3),
-        "release": round(await reliable_query(mixer, f'{ch_addr}/dyn/release', default=0.5) or 0.5, 3),
+        "threshold": round(await reliable_query(mixer, f'{ch_addr}/dyn/thr', default=0.5), 3),
+        "ratio": f"{ratio_index_to_value(int(comp_ratio_idx))}:1" if comp_ratio_idx is not None else "3:1",
+        "attack": round(await reliable_query(mixer, f'{ch_addr}/dyn/attack', default=0.5), 3),
+        "release": round(await reliable_query(mixer, f'{ch_addr}/dyn/release', default=0.5), 3),
     }
 
     # Insert
@@ -195,9 +203,9 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
     for band in range(1, 7):
         eq_bands.append({
             "band": band,
-            "freq": round(await reliable_query(mixer, f'{bus_addr}/eq/{band}/f', default=0.5) or 0.5, 3),
-            "gain": round(await reliable_query(mixer, f'{bus_addr}/eq/{band}/g', default=0.5) or 0.5, 3),
-            "q": round(await reliable_query(mixer, f'{bus_addr}/eq/{band}/q', default=0.5) or 0.5, 3),
+            "freq": round(await reliable_query(mixer, f'{bus_addr}/eq/{band}/f', default=0.5), 3),
+            "gain": round(await reliable_query(mixer, f'{bus_addr}/eq/{band}/g', default=0.5), 3),
+            "q": round(await reliable_query(mixer, f'{bus_addr}/eq/{band}/q', default=0.5), 3),
         })
     settings["eq"] = {"on": eq_on, "bands": eq_bands}
 
@@ -205,8 +213,8 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
     comp_ratio_idx = await reliable_query(mixer, f'{bus_addr}/dyn/ratio', default=5)
     settings["compressor"] = {
         "on": await reliable_query(mixer, f'{bus_addr}/dyn/on', default=0) == 1,
-        "threshold": round(await reliable_query(mixer, f'{bus_addr}/dyn/thr', default=0.5) or 0.5, 3),
-        "ratio": f"{ratio_index_to_value(int(comp_ratio_idx))}:1" if comp_ratio_idx else "3:1",
+        "threshold": round(await reliable_query(mixer, f'{bus_addr}/dyn/thr', default=0.5), 3),
+        "ratio": f"{ratio_index_to_value(int(comp_ratio_idx))}:1" if comp_ratio_idx is not None else "3:1",
     }
 
     # Bus insert
@@ -259,16 +267,16 @@ async def capture_main_settings(mixer) -> Dict:
     for band in range(1, 7):
         eq_bands.append({
             "band": band,
-            "freq": round(await reliable_query(mixer, f'/main/st/eq/{band}/f', default=0.5) or 0.5, 3),
-            "gain": round(await reliable_query(mixer, f'/main/st/eq/{band}/g', default=0.5) or 0.5, 3),
-            "q": round(await reliable_query(mixer, f'/main/st/eq/{band}/q', default=0.5) or 0.5, 3),
+            "freq": round(await reliable_query(mixer, f'/main/st/eq/{band}/f', default=0.5), 3),
+            "gain": round(await reliable_query(mixer, f'/main/st/eq/{band}/g', default=0.5), 3),
+            "q": round(await reliable_query(mixer, f'/main/st/eq/{band}/q', default=0.5), 3),
         })
     settings["eq"] = {"on": eq_on, "bands": eq_bands}
 
     # Main compressor
     settings["compressor"] = {
         "on": await reliable_query(mixer, '/main/st/dyn/on', default=0) == 1,
-        "threshold": round(await reliable_query(mixer, '/main/st/dyn/thr', default=0.5) or 0.5, 3),
+        "threshold": round(await reliable_query(mixer, '/main/st/dyn/thr', default=0.5), 3),
     }
 
     return settings
