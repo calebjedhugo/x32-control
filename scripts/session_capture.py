@@ -50,22 +50,22 @@ FX_TYPE_NAMES = {
     8: "Gated Reverb",
     9: "Reverse Reverb",
     10: "Stereo Delay",
-    11: "Mono Delay",
+    11: "Precision Limiter",
     12: "3-Tap Delay",
     13: "4-Tap Delay",
     14: "Chorus",
     15: "Flanger",
     16: "Phaser",
-    17: "Dimensional Chorus",
+    17: "Ultimo Compressor",
     18: "Rotary Speaker",
     19: "Tremolo/Panner",
     20: "Sub Octaver",
     21: "Delay+Chamber",
-    22: "Chorus+Chamber",
+    22: "Stereo Exciter",
     23: "Flanger+Chamber",
     24: "Delay+Chorus",
     25: "Delay+Flanger",
-    26: "Modulation Delay",
+    26: "Dual Guitar Amp",
     27: "Graphic EQ",
     28: "True EQ",
     29: "Stereo EQ",
@@ -84,6 +84,8 @@ FX_TYPE_NAMES = {
     42: "Stereo Pitch",
     43: "Dual Pitch",
     44: "De-Esser",
+    47: "Ultimo Compressor",
+    50: "Dual Exciter",
 }
 
 
@@ -152,9 +154,10 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
     # Insert
     insert_on = await reliable_query(mixer, f'{ch_addr}/insert/on', default=0) == 1
     insert_sel = await reliable_query(mixer, f'{ch_addr}/insert/sel', default=0)
+    # Insert sel maps: 0-1=FX1, 2-3=FX2, 4-5=FX3, 6-7=FX4 (L/R pairs)
     settings["insert"] = {
         "on": insert_on,
-        "fx_slot": int(insert_sel) + 1 if insert_on and insert_sel is not None else None,
+        "fx_slot": (int(insert_sel) // 2) + 1 if insert_on and insert_sel is not None else None,
     }
 
     # Bus sends (routing)
@@ -217,12 +220,12 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
         "ratio": f"{ratio_index_to_value(int(comp_ratio_idx))}:1" if comp_ratio_idx is not None else "3:1",
     }
 
-    # Bus insert
+    # Bus insert - sel maps: 0-1=FX1, 2-3=FX2, 4-5=FX3, 6-7=FX4 (L/R pairs)
     insert_on = await reliable_query(mixer, f'{bus_addr}/insert/on', default=0) == 1
     insert_sel = await reliable_query(mixer, f'{bus_addr}/insert/sel', default=0)
     settings["insert"] = {
         "on": insert_on,
-        "fx_slot": int(insert_sel) + 1 if insert_on and insert_sel is not None else None,
+        "fx_slot": (int(insert_sel) // 2) + 1 if insert_on and insert_sel is not None else None,
     }
 
     return settings
