@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Capture real-time meter data and RTA from all channels simultaneously.
+Capture real-time meter data from all channels simultaneously.
 
 This script uses raw OSC to subscribe to meter data directly from the X-32,
 capturing truly simultaneous readings across all channels in the same
@@ -8,11 +8,12 @@ musical moment.
 
 Usage:
     python capture.py --duration 30
-    python capture.py --duration 30 --rta-sweep
     python capture.py --duration 10 --output captures/soundcheck.json
 
 Meter data is pushed by the mixer at ~50Hz, giving synchronized snapshots
 of all channel levels in each packet.
+
+For RTA frequency analysis, use rta_listen.py instead (on-demand, single channel).
 """
 
 import argparse
@@ -35,34 +36,10 @@ from common import load_config, get_mixer, fader_to_db, format_db, get_state_val
 METER_CHANNEL_PRE = 0   # Ch 1-32 pre-fader + Aux 1-8 (70 values)
 METER_CHANNEL_POST = 1  # Ch 1-32 post-fader + Aux 1-8 (70 values)
 METER_BUS = 2           # Bus 1-16 + Main L/R + Mono (34 values)
-METER_MATRIX = 3        # Matrix 1-6 + Mono (18 values)
-METER_RTA = 4           # 100 frequency bins (20Hz - 20kHz)
 
 # Activity detection thresholds (raw int16 values, not dB)
 # Raw meter values: 0 = silence, ~32767 = max, negative = treat as no signal
 INACTIVE_THRESHOLD_RAW = 500  # Below this = completely inactive (ignore channel)
-WEAK_SIGNAL_THRESHOLD_RAW = 3000  # Below this during RTA = retry later
-RTA_MEANINGFUL_THRESHOLD_RAW = 200  # RTA bins below this aren't meaningful
-
-# Drum channels get special treatment (transient sources need more capture time)
-DRUM_CHANNELS = {22, 23, 24, 25, 26, 27, 28}  # Floor tom, mid tom, mid-high tom, snare, kick, OH L, OH R
-DRUM_RTA_DWELL_SECONDS = 3.0  # Give drums 3 seconds to catch a hit
-VOCAL_RTA_DWELL_SECONDS = 1.25  # Vocals need time to catch a phrase, not a breath
-DEFAULT_RTA_DWELL_SECONDS = 0.5  # Other sources get 500ms
-
-# Patterns to detect vocal channels by name (case-insensitive)
-VOCAL_NAME_PATTERNS = [
-    'tammy', 'john', 'sara', 'bart', 'jill', 'kat', 'jen', 'pastor',  # Known people
-    'vox', 'vocal', 'voice', 'singer', 'lead', 'backup', 'bkup', 'bgv',  # Common labels
-]
-
-# RTA frequency bins (100 bins, roughly 1/3 octave spacing)
-RTA_FREQUENCIES = [
-    20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160,
-    200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600,
-    2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000,
-    20000
-]  # Approximate center frequencies for display (actual bins are finer)
 
 
 def meter_int_to_db(value: int) -> float:
@@ -159,10 +136,6 @@ def parse_meter_blob(data: bytes, meter_type: int) -> Dict[str, Any]:
                     'R': values[main_start + 1] if len(values) > main_start + 1 else 0
                 }
 
-        elif meter_type == METER_RTA:
-            # RTA - skip header at index 0
-            result['rta'] = [values[i + 1] for i in range(min(100, len(values) - 1))]
-
     except Exception as e:
         result['error'] = str(e)
         result['raw_length'] = len(data)
@@ -179,14 +152,10 @@ class MeterCapture:
         self.sock: Optional[socket.socket] = None
         self.running = False
         self.samples: List[Dict] = []
-        self.rta_source: int = 0  # Current RTA source channel
 
         # Activity tracking
         self.channel_peak_raw: Dict[int, int] = {}  # Track peak raw value seen per channel
         self.active_channels: set = set()  # Channels with meaningful signal
-        self.rta_captures: Dict[int, Dict] = {}  # Best RTA capture per channel
-        self.rta_retry_queue: List[int] = []  # Channels to retry for RTA
-        self.vocal_channels: set = set()  # Channels identified as vocals (get longer dwell)
 
     def connect(self):
         """Create UDP socket for OSC communication."""
@@ -201,36 +170,6 @@ class MeterCapture:
             self.sock.close()
             self.sock = None
 
-    def identify_vocal_channels(self, channel_settings: Dict):
-        """
-        Identify vocal channels based on channel names.
-
-        Args:
-            channel_settings: Dict with channel data, e.g. {'ch01': {'name': 'Tammy', ...}}
-        """
-        self.vocal_channels = set()
-        for ch_key, ch_data in channel_settings.items():
-            name = ch_data.get('name', '').lower()
-            if not name:
-                continue
-            # Check if name matches any vocal pattern
-            for pattern in VOCAL_NAME_PATTERNS:
-                if pattern in name:
-                    ch_num = int(ch_key.replace('ch', ''))
-                    self.vocal_channels.add(ch_num)
-                    break
-        if self.vocal_channels:
-            print(f"Detected vocal channels: {sorted(self.vocal_channels)}", file=sys.stderr)
-
-    def get_dwell_time(self, channel: int) -> float:
-        """Get appropriate RTA dwell time for a channel."""
-        if channel in DRUM_CHANNELS:
-            return DRUM_RTA_DWELL_SECONDS
-        elif channel in self.vocal_channels:
-            return VOCAL_RTA_DWELL_SECONDS
-        else:
-            return DEFAULT_RTA_DWELL_SECONDS
-
     def send_osc(self, address: str, *args):
         """Send an OSC message."""
         if not self.sock:
@@ -238,7 +177,12 @@ class MeterCapture:
 
         # Build OSC message manually
         msg = self._build_osc_message(address, *args)
-        self.sock.sendto(msg, (self.mixer_ip, self.mixer_port))
+        try:
+            self.sock.sendto(msg, (self.mixer_ip, self.mixer_port))
+        except OSError as e:
+            if e.errno == 64:  # Host is down
+                raise ConnectionError(f"Cannot reach mixer at {self.mixer_ip}:{self.mixer_port}") from e
+            raise
 
     def _build_osc_message(self, address: str, *args) -> bytes:
         """Build an OSC message from address and arguments."""
@@ -284,19 +228,6 @@ class MeterCapture:
         self.send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)  # Channel pre-fader
         self.send_osc('/batchsubscribe', '/meters/1', '/meters/1', 0, 0, 2)  # Channel post-fader
         self.send_osc('/batchsubscribe', '/meters/2', '/meters/2', 0, 0, 2)  # Buses + mains
-
-    def subscribe_rta(self, source_channel: int = 0):
-        """
-        Subscribe to RTA data.
-
-        Args:
-            source_channel: Channel to analyze (0 = main LR)
-        """
-        # Set RTA source
-        self.send_osc('/-prefs/rta/source', source_channel)
-        self.rta_source = source_channel
-        # Subscribe to RTA meters
-        self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
 
     def receive_data(self) -> Optional[tuple]:
         """
@@ -377,48 +308,15 @@ class MeterCapture:
             if abs_value > INACTIVE_THRESHOLD_RAW:
                 self.active_channels.add(ch_num)
 
-    def evaluate_rta_capture(self, rta_data: Dict, channel: int, timestamp_ms: int) -> bool:
-        """
-        Evaluate if RTA capture is good enough or needs retry.
-
-        Returns True if capture is acceptable, False if should retry.
-        """
-        if 'rta' not in rta_data:
-            return False
-
-        # Calculate peak RTA level (raw value)
-        peak_rta_raw = max(
-            (v for v in rta_data['rta'] if v > 0),
-            default=0
-        )
-
-        # Check if we have an existing capture for this channel
-        existing = self.rta_captures.get(channel)
-
-        # Store if better than existing or no existing
-        if existing is None or peak_rta_raw > existing.get('peak_raw', 0):
-            self.rta_captures[channel] = {
-                'timestamp_ms': timestamp_ms,
-                'peak_raw': peak_rta_raw,
-                'data': rta_data
-            }
-
-        # Return whether this is a good capture
-        return peak_rta_raw > WEAK_SIGNAL_THRESHOLD_RAW
-
-    async def capture(self, duration: float, rta_sweep: bool = False) -> Dict:
+    async def capture(self, duration: float) -> Dict:
         """
         Capture meter data for specified duration.
 
-        Smart capture mode:
         - Tracks which channels have signal
-        - Only captures RTA for active channels
-        - Retries weak RTA captures
         - Excludes inactive channels from output
 
         Args:
             duration: Capture duration in seconds
-            rta_sweep: If True, cycle RTA through active channels only
 
         Returns:
             Dictionary with all captured data (inactive channels excluded)
@@ -426,27 +324,13 @@ class MeterCapture:
         self.samples = []
         self.channel_peak_raw = {}
         self.active_channels = set()
-        self.rta_captures = {}
-        self.rta_retry_queue = []
 
         start_time = time.time()
         last_xremote = start_time
         last_meter_request = start_time
-        last_rta_switch = start_time
-        current_rta_dwell = DEFAULT_RTA_DWELL_SECONDS  # Adjusted per channel
-
-        # RTA sweep state
-        rta_sweep_list: List[int] = []  # Channels to sweep (populated after initial scan)
-        rta_sweep_index = 0
-        initial_scan_duration = min(3.0, duration * 0.2)  # First 3 sec or 20% to identify active channels
-        initial_scan_complete = False
-        retry_phase = False
-
         sample_count = 0
 
         print(f"Capturing for {duration} seconds...", file=sys.stderr)
-        if rta_sweep:
-            print(f"  Initial scan: {initial_scan_duration:.1f}s to identify active channels", file=sys.stderr)
 
         while time.time() - start_time < duration:
             current_time = time.time()
@@ -460,54 +344,7 @@ class MeterCapture:
             # Re-request meters every 100ms (keeps subscription alive)
             if current_time - last_meter_request > 0.1:
                 self.subscribe_meters()
-                if not rta_sweep or initial_scan_complete:
-                    self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)  # RTA
                 last_meter_request = current_time
-
-            # Initial scan phase - just collect meter data to find active channels
-            if rta_sweep and not initial_scan_complete:
-                if elapsed >= initial_scan_duration:
-                    initial_scan_complete = True
-                    # Sort channels: non-drums first, drums last (drums need more time)
-                    non_drums = sorted([ch for ch in self.active_channels if ch not in DRUM_CHANNELS])
-                    drums = sorted([ch for ch in self.active_channels if ch in DRUM_CHANNELS])
-                    rta_sweep_list = non_drums + drums
-
-                    if rta_sweep_list:
-                        active_drums = [ch for ch in drums]
-                        print(f"  Found {len(rta_sweep_list)} active channels: {rta_sweep_list}", file=sys.stderr)
-                        if active_drums:
-                            print(f"  Drums ({active_drums}) will be captured last with {DRUM_RTA_DWELL_SECONDS}s dwell time", file=sys.stderr)
-                        active_vocals = [ch for ch in self.vocal_channels if ch in rta_sweep_list]
-                        if active_vocals:
-                            print(f"  Vocals ({active_vocals}) get {VOCAL_RTA_DWELL_SECONDS}s dwell time", file=sys.stderr)
-                        # Start RTA on first active channel
-                        first_ch = rta_sweep_list[0]
-                        current_rta_dwell = self.get_dwell_time(first_ch)
-                        self.subscribe_rta(first_ch)
-                    else:
-                        print(f"  No active channels found during initial scan", file=sys.stderr)
-
-            # RTA sweep mode - cycle through active channels only
-            elif rta_sweep and rta_sweep_list and current_time - last_rta_switch > current_rta_dwell:
-                # Move to next channel
-                rta_sweep_index = (rta_sweep_index + 1) % len(rta_sweep_list)
-
-                # Check if we've completed a full sweep and have retries
-                if rta_sweep_index == 0 and self.rta_retry_queue and not retry_phase:
-                    retry_phase = True
-                    # Sort retries: non-drums first, drums last
-                    non_drums = sorted([ch for ch in self.rta_retry_queue if ch not in DRUM_CHANNELS])
-                    drums = sorted([ch for ch in self.rta_retry_queue if ch in DRUM_CHANNELS])
-                    rta_sweep_list = non_drums + drums
-                    self.rta_retry_queue = []
-                    print(f"  Retrying {len(rta_sweep_list)} channels with weak signal", file=sys.stderr)
-
-                if rta_sweep_index < len(rta_sweep_list):
-                    next_channel = rta_sweep_list[rta_sweep_index]
-                    current_rta_dwell = self.get_dwell_time(next_channel)
-                    self.subscribe_rta(next_channel)
-                    last_rta_switch = current_time
 
             # Receive and process data
             result = self.receive_data()
@@ -522,12 +359,7 @@ class MeterCapture:
                     # Determine meter type from address (more reliable than data length)
                     num_values = len(data) // 2
 
-                    if address == '/meters/4':  # RTA
-                        sample['type'] = 'rta'
-                        sample['rta_source'] = self.rta_source
-                        parsed = parse_meter_blob(data, METER_RTA)
-                        sample['data'] = parsed
-                    elif address in ['/meters/0', '/meters/1'] and num_values >= 70:  # Channel meters
+                    if address in ['/meters/0', '/meters/1'] and num_values >= 70:  # Channel meters
                         sample['type'] = 'channels'
                         parsed = parse_meter_blob(data, METER_CHANNEL_PRE)
                         sample['data'] = parsed
@@ -540,41 +372,24 @@ class MeterCapture:
                         sample['type'] = 'unknown'
                         sample['raw_values'] = num_values
 
-                    # Evaluate RTA quality for sweep mode (after RTA sample)
-                    if sample.get('type') == 'rta' and rta_sweep and self.rta_source > 0:
-                        is_good = self.evaluate_rta_capture(
-                            sample['data'], self.rta_source, sample['timestamp_ms']
-                        )
-                        if not is_good and not retry_phase:
-                            # Queue for retry if not already queued
-                            if self.rta_source not in self.rta_retry_queue:
-                                self.rta_retry_queue.append(self.rta_source)
-
                     self.samples.append(sample)
                     sample_count += 1
 
             # Progress update
             if sample_count > 0 and sample_count % 100 == 0:
                 progress = (elapsed / duration) * 100
-                active_str = f", {len(self.active_channels)} active" if rta_sweep else ""
-                print(f"Progress: {progress:.0f}% ({sample_count} samples{active_str})", file=sys.stderr)
+                print(f"Progress: {progress:.0f}% ({sample_count} samples, {len(self.active_channels)} active)", file=sys.stderr)
 
             await asyncio.sleep(0.001)
 
         # Final summary
         print(f"Capture complete: {sample_count} samples", file=sys.stderr)
         print(f"  Active channels: {sorted(self.active_channels)}", file=sys.stderr)
-        if rta_sweep:
-            print(f"  RTA captured for: {sorted(self.rta_captures.keys())}", file=sys.stderr)
 
         return {
             'sample_count': sample_count,
             'duration_ms': int(duration * 1000),
             'active_channels': sorted(self.active_channels),
-            'rta_captures': {
-                ch: {'peak_raw': data['peak_raw'], 'timestamp_ms': data['timestamp_ms']}
-                for ch, data in self.rta_captures.items()
-            },
             'samples': self.samples
         }
 
@@ -687,223 +502,38 @@ async def capture_channel_settings(mixer) -> Dict:
     return settings
 
 
-async def recapture_channels(config: Dict, channels: List[int], duration: float) -> Dict:
-    """
-    Recapture RTA data for specific channels only.
-
-    Used when initial capture missed channels (e.g., drummer wasn't hitting toms).
-    """
-    print(f"Recapturing RTA for channels: {channels}", file=sys.stderr)
-    print(f"Duration: {duration}s per channel", file=sys.stderr)
-
-    capture = MeterCapture(config['mixer_ip'], config['mixer_port'])
-    rta_results = {}
-
-    try:
-        capture.connect()
-        capture.send_xremote()
-
-        for ch_num in channels:
-            # Use drum timing for all recaptures (we want good data)
-            dwell_time = max(DRUM_RTA_DWELL_SECONDS, duration)
-
-            print(f"  Capturing channel {ch_num} for {dwell_time}s...", file=sys.stderr)
-            capture.subscribe_rta(ch_num)
-
-            start_time = time.time()
-            best_capture = None
-            best_peak = 0
-
-            while time.time() - start_time < dwell_time:
-                # Keep-alive
-                if time.time() - start_time > 8:
-                    capture.send_xremote()
-
-                # Request meters
-                capture.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
-
-                result = capture.receive_data()
-                if result:
-                    address, data = result
-                    if data and len(data) // 2 == 100:  # RTA data
-                        parsed = parse_meter_blob(data, METER_RTA)
-                        if 'rta' in parsed:
-                            peak = max(
-                                (v for v in parsed['rta'] if v > 0),
-                                default=0
-                            )
-                            if peak > best_peak:
-                                best_peak = peak
-                                best_capture = {
-                                    'timestamp_ms': int((time.time() - start_time) * 1000),
-                                    'peak_raw': peak,
-                                    'data': parsed
-                                }
-
-                await asyncio.sleep(0.01)
-
-            if best_capture:
-                rta_results[ch_num] = best_capture
-                print(f"    Got capture with peak raw {best_peak}", file=sys.stderr)
-            else:
-                print(f"    No RTA data received for channel {ch_num}", file=sys.stderr)
-
-    finally:
-        capture.disconnect()
-
-    return rta_results
-
-
-def merge_recapture(original_path: Path, recapture_data: Dict, channels: List[int]) -> None:
-    """Merge recaptured RTA data into existing capture file."""
-
-    # Load original
-    with open(original_path, 'r') as f:
-        original = json.load(f)
-
-    # Add recapture metadata
-    if 'recaptures' not in original['metadata']:
-        original['metadata']['recaptures'] = []
-
-    original['metadata']['recaptures'].append({
-        'timestamp': datetime.now().isoformat(),
-        'channels': channels,
-        'reason': 'manual_recapture'
-    })
-
-    # Update active channels if needed
-    active = set(original['metadata'].get('active_channels', []))
-    active.update(channels)
-    original['metadata']['active_channels'] = sorted(active)
-
-    # Merge RTA captures into meters section
-    if 'rta_captures' not in original['meters']:
-        original['meters']['rta_captures'] = {}
-
-    for ch_num, rta_data in recapture_data.items():
-        ch_key = str(ch_num)
-        original['meters']['rta_captures'][ch_key] = {
-            'peak_raw': rta_data['peak_raw'],
-            'timestamp_ms': rta_data['timestamp_ms'],
-            'recaptured': True
-        }
-
-        # Also add as a sample
-        original['meters']['samples'].append({
-            'timestamp_ms': rta_data['timestamp_ms'],
-            'type': 'rta',
-            'rta_source': ch_num,
-            'recaptured': True,
-            'data': rta_data['data']
-        })
-
-    # Write back
-    with open(original_path, 'w') as f:
-        json.dump(original, f, indent=2)
-
-    print(f"Merged recapture data into {original_path}", file=sys.stderr)
-
-
 async def main():
     parser = argparse.ArgumentParser(
-        description="Capture real-time meter and RTA data from X-32",
+        description="Capture real-time meter data from X-32",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     python capture.py --duration 30
-    python capture.py --duration 30 --rta-sweep
     python capture.py --duration 10 --output captures/soundcheck.json
 
-    # Recapture missed channels and merge into existing file:
-    python capture.py --recapture captures/worship.json --channels 22,23,24
-
-The RTA can only analyze one source at a time. Use --rta-sweep to cycle
-through channels (loses perfect simultaneity but captures frequency data
-for each channel).
-
-RECAPTURE MODE:
-If you missed channels (e.g., toms weren't being played), use --recapture
-to capture just those channels and merge into the original file. Have the
-musician play while capturing.
+For RTA frequency analysis of individual channels, use rta_listen.py instead.
         """
     )
     parser.add_argument(
         "--duration", "-d",
         type=float,
         default=30,
-        help="Capture duration in seconds (default: 30, or per-channel for recapture)"
+        help="Capture duration in seconds (default: 30)"
     )
     parser.add_argument(
         "--output", "-o",
         help="Output file path (default: captures/YYYY-MM-DD_HHMMSS.json)"
     )
     parser.add_argument(
-        "--rta-sweep",
-        action="store_true",
-        help="Cycle RTA through all channels (captures frequency data per channel)"
-    )
-    parser.add_argument(
-        "--rta-source",
-        type=int,
-        default=0,
-        help="Fixed RTA source channel (0=main LR, 1-32=channel, ignored if --rta-sweep)"
-    )
-    parser.add_argument(
         "--skip-settings",
         action="store_true",
         help="Skip capturing channel settings (faster, meters only)"
-    )
-    parser.add_argument(
-        "--recapture",
-        type=str,
-        metavar="FILE",
-        help="Recapture mode: path to existing capture file to merge into"
-    )
-    parser.add_argument(
-        "--channels", "-c",
-        type=str,
-        help="Channels to recapture (e.g., '22,23,24' for toms). Required with --recapture"
     )
 
     args = parser.parse_args()
 
     # Load config
     config = load_config()
-
-    # Handle recapture mode
-    if args.recapture:
-        if not args.channels:
-            print("Error: --channels required with --recapture", file=sys.stderr)
-            print("Example: --recapture captures/file.json --channels 22,23,24", file=sys.stderr)
-            sys.exit(1)
-
-        recapture_path = Path(args.recapture)
-        if not recapture_path.exists():
-            print(f"Error: Capture file not found: {recapture_path}", file=sys.stderr)
-            sys.exit(1)
-
-        # Parse channel list
-        try:
-            channels = [int(ch.strip()) for ch in args.channels.split(',')]
-        except ValueError:
-            print(f"Error: Invalid channel list: {args.channels}", file=sys.stderr)
-            print("Expected format: 22,23,24", file=sys.stderr)
-            sys.exit(1)
-
-        # Do recapture
-        recapture_data = await recapture_channels(config, channels, args.duration)
-
-        if recapture_data:
-            merge_recapture(recapture_path, recapture_data, channels)
-            print(f"\nRecapture complete!", file=sys.stderr)
-            print(f"  Channels: {list(recapture_data.keys())}", file=sys.stderr)
-            print(f"  Merged into: {recapture_path}", file=sys.stderr)
-            print(json.dumps({'success': True, 'path': str(recapture_path), 'channels': channels}))
-        else:
-            print("No data captured", file=sys.stderr)
-            print(json.dumps({'success': False, 'error': 'no_data'}))
-
-        return  # Exit after recapture
 
     # Determine output path
     if args.output:
@@ -931,24 +561,16 @@ musician play while capturing.
     print("Starting meter capture...", file=sys.stderr)
     capture = MeterCapture(config['mixer_ip'], config['mixer_port'])
 
-    # Identify vocal channels for longer dwell time
-    if settings.get('channels'):
-        capture.identify_vocal_channels(settings['channels'])
-
     try:
         capture.connect()
         capture.send_xremote()
-
-        # Set initial RTA source
-        if not args.rta_sweep:
-            capture.subscribe_rta(args.rta_source)
-
-        # Subscribe to meters
         capture.subscribe_meters()
-
-        # Capture data
-        meter_data = await capture.capture(args.duration, args.rta_sweep)
-
+        meter_data = await capture.capture(args.duration)
+    except ConnectionError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Make sure the mixer is powered on and reachable.", file=sys.stderr)
+        print(json.dumps({'success': False, 'error': 'connection_failed'}))
+        sys.exit(1)
     finally:
         capture.disconnect()
 
@@ -987,8 +609,6 @@ musician play while capturing.
             'capture_time': datetime.now().isoformat(),
             'duration_seconds': args.duration,
             'mixer_ip': config['mixer_ip'],
-            'rta_sweep': args.rta_sweep,
-            'rta_source': args.rta_source if not args.rta_sweep else 'sweep',
             'active_channels': sorted(active_channels),
             'inactive_threshold_raw': INACTIVE_THRESHOLD_RAW,
         },

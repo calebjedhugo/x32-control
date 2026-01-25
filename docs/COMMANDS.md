@@ -10,10 +10,23 @@ source venv/bin/activate
 
 ## Command Reference
 
+### Session Capture (Start of Session)
+```bash
+python scripts/session_capture.py --duration 5
+```
+Captures EVERYTHING: all channels, buses, FX, routing, gain staging. This is what `/x32-capture` runs.
+
+### RTA Frequency Analysis (On-Demand)
+```bash
+python scripts/rta_listen.py --channel 26 --update-session                    # 15 seconds
+python scripts/rta_listen.py --channel 26 --until-confident --update-session  # Auto-stop when stable
+```
+**Always use `--update-session`** to splice results back into session capture.
+
+### Other Commands
 | Command | Description |
 |---------|-------------|
-| `python scripts/capture.py --duration 30 --rta-sweep` | Capture meters + RTA |
-| `python scripts/capture.py --recapture FILE --channels 22,23` | Recapture and merge |
+| `python scripts/capture.py --duration 30` | Capture meter data only |
 | `python scripts/snapshot.py` | Full mixer state to JSON |
 | `python scripts/query.py --channel 5` | Get channel info |
 | `python scripts/query.py --channel 5 --eq` | Get channel EQ |
@@ -49,7 +62,9 @@ For raw control: `python scripts/control.py --raw <address> <value>`
 
 ## Core Files
 - `scripts/common.py` - Config, connection, parsing, dB conversion
-- `scripts/capture.py` - Real-time meter + RTA capture
+- `scripts/session_capture.py` - **Primary capture**: all settings, routing, FX, gain staging
+- `scripts/rta_listen.py` - On-demand RTA analysis, splices into session capture
+- `scripts/capture.py` - Meter-only capture (rarely needed directly)
 - `scripts/query.py` - Read mixer state
 - `scripts/control.py` - Modify parameters
 - `scripts/snapshot.py` - Full state dump
