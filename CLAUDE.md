@@ -2,24 +2,20 @@
 
 **CRITICAL: Users are sound engineers, not developers. Speak plain English about music and sound. YOU run all commands - never ask users to run scripts.**
 
+## Safety Rules
+
+- **NEVER change during live service** unless told "we're live, go ahead"
+- **NEVER save scenes** - user manages one scene manually
+- **Small moves** - 2-3dB at a time
+- **Always confirm** before executing
+
 ## First Run / Debugging
 
 **Scripts were developed without live mixer testing (Jan 2026).** If something fails or data looks wrong:
 
-1. **Fix it yourself** - Don't ask the user to debug. Read the script, fix the issue, re-run
-2. **The user is a sound engineer** - They can tell you "that's not right, the compressor threshold is actually -20" but they shouldn't have to read code
-
-**Known risk areas** (likely to need debugging):
-- **EQ/dynamics values wrong or all defaults**: The behringer-mixer library doesn't load these. We query via raw OSC in session_capture.py. OSC addresses or response parsing may be wrong. Cross-reference with `docs/TECHNICAL.md` and the [X32 OSC spec](https://behringer.world/wiki/doku.php?id=x32:osc-protocol:ch)
-- **Channel/bus indexing off-by-one**: X32 uses 01-32, code might use 0-31 or 1-32 inconsistently
-- **Compressor/gate values not matching mixer**: Check the OSC address format (e.g., `/ch/01/dyn/thr` vs `/ch/01/dynamics/threshold`)
-- **RTA data empty or garbage**: Meter blob parsing in rta_listen.py might have wrong offsets
-
-**How to debug**:
-1. Run `python scripts/query.py --channel X --eq` and compare to what the mixer actually shows
-2. If wrong, read session_capture.py's `capture_channel_settings()` function
-3. Check OSC addresses against the spec, fix, re-run
-4. Same approach for dynamics, routing, FX
+1. **Fix it yourself** - Don't ask the user to debug
+2. **The user is a sound engineer** - They can tell you "that's not right" but they shouldn't have to read code
+3. **See `docs/TECHNICAL.md`** for OSC addresses, known quirks, and debugging details
 
 ## Quick Reference Docs
 - `docs/CAPTURE.md` - Session capture and RTA workflow details
@@ -56,24 +52,29 @@
 
 ## Session Workflow
 
-### 1. Start of Session
-Run `/x32-capture` when the user says "let's get started" or similar. This captures EVERYTHING:
-- All 32 channel settings (EQ, dynamics, preamp, routing)
-- All 16 bus settings
-- All 8 FX slots (type, parameters, routing)
-- Gain staging analysis (who's hot, who's quiet)
-- Signal paths (e.g., vocals → vocal bus → exciter → main)
+### 1. Start of Session (Capture → Analyze → Suggest)
+Run `/x32-capture` when the user says "let's get started" or similar. This:
+1. **Captures** everything (32 channels, 16 buses, 8 FX, routing, gain staging)
+2. **Analyzes** the capture automatically (EQ issues, HPF, masking, gain staging, room rules)
+3. **Presents findings** in plain English with available fixes
 
-Output is saved to `captures/session_YYYY-MM-DD_HH-MM-SS.json`. **Read this file** to have full context.
+Output is saved to `captures/session_YYYY-MM-DD_HH-MM-SS.json`.
 
-### 2. Answering Questions
+### 2. Applying Fixes
+Findings from analyze.py include a `fix` field with ready-to-run `control.py` commands:
+- Present fixes in plain English (never show raw commands to the user)
+- Ask "Want me to apply any of these?" and wait for approval
+- Run the fix command, confirm what changed, ask them to listen
+- Findings without `fix` (HPF, compressor ratio, preamp gain) require manual adjustment on the board
+
+### 3. Answering Questions
 **Use the session capture data.** Don't re-query the mixer unless you need fresh real-time info.
 
 - "What's Tammy's EQ?" → Look up ch01 in session capture
 - "Where does the kick go?" → Check ch26 routing/sends in session capture
 - "What's on FX4?" → Look up fx4 in session capture
 
-### 3. RTA (Frequency Analysis)
+### 4. RTA (Frequency Analysis)
 When user asks about frequencies ("what's the kick hitting?"), run RTA:
 ```bash
 python scripts/rta_listen.py --channel 26 --update-session
@@ -81,16 +82,15 @@ python scripts/rta_listen.py --channel 26 --update-session
 
 **ALWAYS use `--update-session`** - this splices RTA results back into the session capture so you don't have to re-listen later.
 
-### 4. Data Freshness
+### 5. Data Freshness
 - Session capture >24 hours old? Suggest running `/x32-capture` for today
 - The rta_listen script warns automatically if capture is stale
-- RTA data still gets spliced even into old captures (better than nothing)
 
 ## Natural Language → Actions
 
 | User says | You do |
 |-----------|--------|
-| "let's get started" | Run `/x32-capture` |
+| "let's get started" | Run `/x32-capture` (captures + analyzes + suggests fixes) |
 | "check Ryan's signal path" | Look up in session capture |
 | "what frequencies is the kick hitting?" | Run rta_listen.py --channel 26 --update-session |
 | "turn up the kick" | Raise fader ch26 |
@@ -99,36 +99,22 @@ python scripts/rta_listen.py --channel 26 --update-session
 | "bass is muddy" | Cut EQ 200-400Hz on ch31 |
 | "piano is boxy" | Cut EQ 300-500Hz on ch17-18 |
 
-## Safety Rules
-
-- **NEVER change during live service** unless told "we're live, go ahead"
-- **Small moves** - 2-3dB at a time
-- **Always confirm** before executing
-- **NEVER save scenes** - user manages one scene manually
-
-## Commands
+## Quick Commands
 
 ```bash
 cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
-
-# Session capture (EVERYTHING - settings, routing, gain staging)
-python scripts/session_capture.py --duration 5
-
-# RTA frequency analysis (on-demand, single channel)
-# ALWAYS use --update-session to splice results into session capture
-python scripts/rta_listen.py --channel 26 --update-session                    # 15 seconds
-python scripts/rta_listen.py --channel 26 --until-confident --update-session  # Auto-stop when stable
-
-# Query (if you need fresh data mid-session)
-python scripts/query.py --channel 26 --eq
-python scripts/query.py --channel 26 --dynamics
-python scripts/query.py --fx 1
-
-# Control (always confirm first)
-python scripts/control.py --channel 26 --fader -5dB
-python scripts/control.py --channel 26 --eq-band 2 --gain 0.6
-python scripts/control.py --fx 1 --fx-param 1 --fx-value 0.5
 ```
+
+| Task | Command |
+|------|---------|
+| Session capture | `python scripts/session_capture.py --duration 5` |
+| Analyze mix | `python scripts/analyze.py` (add `--text` for readable output) |
+| Compare sessions | `python scripts/diff_sessions.py` (add `--text` for readable) |
+| RTA frequency | `python scripts/rta_listen.py --channel 26 --update-session` |
+| Query channel | `python scripts/query.py --channel 26 --eq` |
+| Control | `python scripts/control.py --channel 26 --fader -5dB` |
+
+**IMPORTANT: ALWAYS use `--update-session` with rta_listen.py.** Full syntax in `docs/COMMANDS.md`.
 
 ## Room Issues
 - Low-mid buildup (200-400Hz) from corner loading

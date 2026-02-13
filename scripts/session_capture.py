@@ -38,6 +38,10 @@ METER_CHANNEL_PRE = 0
 INACTIVE_THRESHOLD_RAW = 500
 
 # FX type names (index -> name)
+# NOTE: Some names may be inaccurate. The X32 FX numbering varies by firmware
+# and slot type (insert vs send). Names for types 45-50 are gaps in the official
+# list. Verify against mixer display when possible. Types 47 and 50 were
+# identified from live sessions but names need confirmation.
 FX_TYPE_NAMES = {
     0: "Hall Reverb",
     1: "Ambience",
@@ -116,9 +120,16 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
 
     # Preamp
     hpf_val = await reliable_query(mixer, f'{ch_addr}/preamp/hpf', default=0.0)
+    # Phantom power lives on the headamp, not the channel preamp.
+    # Channel source tells us which physical input (and headamp) is patched.
+    source = await reliable_query(mixer, f'{ch_addr}/config/source', default=None)
+    if source is not None and 0 <= int(source) <= 31:
+        phantom = await reliable_query(mixer, f'/headamp/{int(source):03d}/phantom', default=0) == 1
+    else:
+        phantom = False
     settings["preamp"] = {
         "gain": round(await reliable_query(mixer, f'{ch_addr}/preamp/trim', default=0.5), 3),
-        "phantom": await reliable_query(mixer, f'{ch_addr}/preamp/48v', default=0) == 1,
+        "phantom": phantom,
         "hpf_on": await reliable_query(mixer, f'{ch_addr}/preamp/hpon', default=0) == 1,
         "hpf_hz": hpf_value_to_hz(hpf_val) if hpf_val is not None else 20,
     }
@@ -510,6 +521,17 @@ Example:
             result["channels"][f"ch{ch_num:02d}"] = await capture_channel_settings(mixer, ch_num)
             if ch_num % 8 == 0:
                 print(f"  Channels 1-{ch_num} done", file=sys.stderr)
+
+        # Fix stereo linked pairs: even (right) channel returns stale/default
+        # values for processing settings. Copy from odd (left/master) channel.
+        for ch_num in range(1, 32, 2):
+            odd_key = f"ch{ch_num:02d}"
+            even_key = f"ch{ch_num+1:02d}"
+            odd_ch = result["channels"][odd_key]
+            even_ch = result["channels"][even_key]
+            if odd_ch.get("stereo_linked") and even_ch.get("stereo_linked"):
+                for key in ("preamp", "eq", "gate", "compressor", "insert", "sends"):
+                    even_ch[key] = odd_ch[key]
 
         # Capture all buses
         print("Capturing bus settings...", file=sys.stderr)

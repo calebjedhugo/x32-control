@@ -1,6 +1,6 @@
 # X32 Session Capture
 
-Run a comprehensive capture of the X-32 mixer state for this session.
+Run a comprehensive capture of the X-32 mixer state, then analyze it.
 
 ## Instructions
 
@@ -11,48 +11,50 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 2. Read the output JSON file that was created (path shown in script output)
 
-3. Summarize for the user:
+3. Run the analysis engine on the capture (outputs JSON):
+```bash
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate && python scripts/analyze.py
+```
+
+4. Parse the analysis JSON. Summarize for the user:
    - How many channels are active
-   - Any gain staging issues (channels running too hot or too quiet)
-   - Notable signal paths (e.g., "Vocals route through Bus 5 with an Exciter")
+   - Any **critical** or **warning** findings (group by type: EQ issues, HPF issues, masking conflicts, gain staging)
+   - For findings with a `fix` field, tell the user what the fix would do in plain English
+   - If there are fixes available, ask: "Want me to apply any of these fixes?"
 
-4. Store the capture path so you can reference it when the user asks about specific channels
+5. Store the capture path so you can reference it when the user asks about specific channels
 
-## Example Summary
+## Presenting Findings
 
-"Captured 12 active channels. Gain staging looks good except:
-- Kick (ch26) is running hot - consider backing off the preamp
-- Sara (ch3) is quiet compared to other vocals
+Translate findings into sound engineer language. Don't show raw JSON or command syntax.
 
-Signal routing:
-- Vocals (ch1-6) → Bus 5 (Vocal Bus) with Exciter (FX8) → Main
-- Drums (ch22-28) → direct to Main
-- Keys (ch17-18) → Bus 3 (Keys) → Main"
+**Good**: "Jen's flute (ch21) has a +4.5dB boost at 3.3kHz which exceeds the +4dB limit. I can pull that down to +4dB."
+
+**Bad**: "Finding: Band 3: +4.5dB at 3.3kHz exceeds +4.0dB limit for vocal. Fix: python scripts/control.py --channel 21 --eq-band 3 --gain 0.633"
+
+## Applying Fixes
+
+When the user approves a fix:
+1. Run the `fix` command from the finding (it's a ready-to-run control.py invocation)
+2. Confirm what changed
+3. Remind them to listen and verify - "Does that sound right to you?"
+
+For findings WITHOUT a `fix` field (HPF changes, compressor ratio, gain staging):
+- These require manual mixer adjustment
+- Tell the user what to change and where on the board
 
 ## After Capture
 
-**Use the session capture for all questions.** You have:
-- All channel settings (EQ, dynamics, preamp, routing)
-- All bus settings
-- All FX slots and routing
-- Signal path analysis
+**Use the session capture for all questions.** Don't re-query the mixer unless you need real-time data.
 
-**Don't re-query the mixer** unless you need real-time data.
+## RTA (On-Demand)
 
-## When User Asks About Frequencies
-
-If user asks "what frequencies is the kick hitting?", run RTA:
+When user asks about frequencies, run RTA with **`--update-session`**:
 ```bash
 cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate && python scripts/rta_listen.py --channel 26 --update-session
 ```
 
-**Always use `--update-session`** to splice RTA results back into the session capture. This way:
-- You don't have to re-listen if they ask again
-- All data stays in one place
-- The script warns if session capture is >24 hours old
-
 ## Data Freshness
 
-If user returns another day or asks about stale data:
 - Session capture >24 hours old? Suggest running `/x32-capture` again
-- RTA listen will warn you automatically about old captures
+- RTA listen warns automatically about old captures

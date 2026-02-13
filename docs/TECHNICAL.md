@@ -32,6 +32,13 @@ Use `ratio_index_to_value()` in common.py.
 - Value 0.0-1.0 maps logarithmically to 20-400Hz
 - Use `hpf_value_to_hz()` in common.py
 
+### Phantom Power (48V)
+- **NOT at** `/ch/XX/preamp/48v` (does not respond)
+- Phantom lives on the headamp, indexed by physical input
+- Get channel's physical input: `/ch/XX/config/source` (returns 0-31 for local inputs)
+- Query phantom: `/headamp/NNN/phantom` where NNN = source value, zero-padded to 3 digits
+- Example: ch17 source=9 → `/headamp/009/phantom`
+
 ### Insert Selector
 - Address: `/ch/XX/insert/sel`
 - Value 0-7 maps to FX1-4 in pairs (L/R):
@@ -165,31 +172,16 @@ Guitar amp simulator with cabinet modeling. **Verified 2026-01-25**.
 
 ### Other FX Types (TODO)
 
-Add mappings as needed. Query with:
+Add mappings as needed. Query FX parameters with:
 ```bash
-python -c "..." # see session debugging examples
+python scripts/query.py --fx 1
 ```
 
 ## Known Issues
 
 - **EQ/dynamics on/off queries occasionally wrong**: Some channels report incorrect on/off state. 5-retry approach helps but isn't perfect.
 
-## Test History
+## Changelog
 
-### January 18, 2026 - Session 1
-- Fixed EQ, dynamics, FX read/write
-- Fixed meter blob parsing
-- All core features verified working
-
-### January 18, 2026 - Session 2
-- Fixed compressor ratio display (index → actual value)
-- Added HPF queries
-- Increased query retries from 3 to 5
-
-### January 25, 2026 - Session Capture Fixes
-- Fixed pan not being captured (was using state dict, now uses reliable_query)
-- Fixed `or 0.5` bug that converted hard-left pan (0.0) to center (0.5)
-- Added stereo link detection (`/config/chlink/X-Y`)
-- Removed all `or 0.5` patterns that could corrupt 0.0 values
-- Added Dual Exciter (type 50) parameter mapping
-- Fixed insert_sel to FX slot mapping (was +1, now //2+1 for L/R pairs)
+- **Jan 25, 2026**: Fixed pan capture, stereo link detection, insert_sel mapping, added Dual Exciter params
+- **Jan 18, 2026**: Fixed EQ/dynamics/FX read/write, meter blob parsing, compressor ratio display, HPF queries

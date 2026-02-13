@@ -21,7 +21,24 @@ Captures EVERYTHING: all channels, buses, FX, routing, gain staging. This is wha
 python scripts/rta_listen.py --channel 26 --update-session                    # 15 seconds
 python scripts/rta_listen.py --channel 26 --until-confident --update-session  # Auto-stop when stable
 ```
-**Always use `--update-session`** to splice results back into session capture.
+**IMPORTANT: ALWAYS use `--update-session`** to splice results back into session capture.
+
+### Mix Analysis (Offline - No Mixer Needed)
+```bash
+python scripts/analyze.py                                    # Analyze latest session (JSON)
+python scripts/analyze.py captures/session_2026-01-25.json   # Specific file
+python scripts/analyze.py --text                             # Human-readable report
+python scripts/analyze.py -p warning                         # Warnings only
+```
+JSON output includes `fix` field with ready-to-run `control.py` commands where applicable. Checks HPF, EQ boosts, room-aware rules, cross-channel masking, main bus correction.
+
+### Session Comparison (Offline)
+```bash
+python scripts/diff_sessions.py                              # Compare two most recent (JSON)
+python scripts/diff_sessions.py old.json new.json            # Specific files
+python scripts/diff_sessions.py --text                       # Human-readable report
+```
+Shows fader, EQ, mute, dynamics, and FX changes between sessions.
 
 ### Other Commands
 | Command | Description |
@@ -64,6 +81,8 @@ For raw control: `python scripts/control.py --raw <address> <value>`
 - `scripts/common.py` - Config, connection, parsing, dB conversion
 - `scripts/session_capture.py` - **Primary capture**: all settings, routing, FX, gain staging
 - `scripts/rta_listen.py` - On-demand RTA analysis, splices into session capture
+- `scripts/analyze.py` - **Mix analysis**: reads session JSON, produces recommendations (offline)
+- `scripts/diff_sessions.py` - **Session diff**: compares two captures (offline)
 - `scripts/capture.py` - Meter-only capture (rarely needed directly)
 - `scripts/query.py` - Read mixer state
 - `scripts/control.py` - Modify parameters
@@ -80,12 +99,4 @@ For raw control: `python scripts/control.py --raw <address> <value>`
 
 ## Technical Notes
 
-**IMPORTANT: behringer_mixer library quirks**
-
-| Issue | Solution |
-|-------|----------|
-| State keys differ from OSC | `/ch/01/mix/fader` → `/ch/1/mix_fader`. Use `get_state_value()` helper |
-| Meters need batchsubscribe | `send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)` |
-| RTA detection | Use address `/meters/4`, not data length |
-| Main fader writes | **NOT WORKING** - correct OSC address unknown |
-| EQ/dynamics reads | Not loaded by library (only basic channel info)
+See `docs/TECHNICAL.md` for library quirks, OSC details, and debugging.

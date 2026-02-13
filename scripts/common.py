@@ -112,24 +112,24 @@ def fader_to_db(fader_value: float) -> float:
     """
     Convert fader value (0.0-1.0) to decibels.
 
-    X32 fader mapping:
-    - 0.0 = -inf dB
-    - 0.75 = 0 dB (unity)
-    - 1.0 = +10 dB
-
-    Formula based on X32 documentation.
+    X32 fader mapping (piecewise linear, verified against mixer):
+    - 0.0  = -inf dB
+    - 0.25 = -30 dB
+    - 0.5  = -10 dB
+    - 0.75 =   0 dB (unity)
+    - 1.0  = +10 dB
     """
     if fader_value <= 0.0:
         return float('-inf')
-    elif fader_value < 0.5:
+    elif fader_value <= 0.25:
         # -90 dB to -30 dB
-        return 40 * fader_value - 90
-    elif fader_value < 0.75:
-        # -30 dB to 0 dB
-        return 120 * fader_value - 90
+        return 240 * fader_value - 90
+    elif fader_value <= 0.5:
+        # -30 dB to -10 dB
+        return 80 * fader_value - 50
     else:
-        # 0 dB to +10 dB
-        return 40 * fader_value
+        # -10 dB to +10 dB
+        return 40 * fader_value - 30
 
 
 def db_to_fader(db: float) -> float:
@@ -140,12 +140,12 @@ def db_to_fader(db: float) -> float:
     """
     if db <= -90:
         return 0.0
-    elif db < -30:
-        return (db + 90) / 40
-    elif db < 0:
-        return (db + 90) / 120
+    elif db <= -30:
+        return (db + 90) / 240
+    elif db <= -10:
+        return (db + 50) / 80
     elif db <= 10:
-        return db / 40
+        return (db + 30) / 40
     else:
         return 1.0
 
