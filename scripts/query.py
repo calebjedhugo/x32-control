@@ -196,7 +196,7 @@ async def query_channel_sends(state, ch_addr):
 
         for bus_num in range(1, 17):
             bus_addr = f"/bus/{bus_num:02d}"
-            level = state.get(f"{ch_addr}/mix/{bus_num:02d}/level", 0.0)
+            level = get_state_value(state, ch_addr, f"mix/{bus_num:02d}/level", 0.0)
             sends[bus_addr] = round(level, 3)
 
         return {
@@ -282,7 +282,10 @@ async def query_main_dynamics(mixer):
     try:
         comp_on = await reliable_query(mixer, '/main/st/dyn/on', default=0) == 1
         comp_thr = await reliable_query(mixer, '/main/st/dyn/thr', default=0.5)
-        comp_ratio = await reliable_query(mixer, '/main/st/dyn/ratio', default=0.5)
+        comp_ratio_idx = await reliable_query(mixer, '/main/st/dyn/ratio', default=5)
+
+        # Convert ratio index to actual value (same as channel dynamics)
+        comp_ratio = ratio_index_to_value(int(comp_ratio_idx)) if comp_ratio_idx is not None else 3
 
         return {
             "target": "main/st",
@@ -290,7 +293,7 @@ async def query_main_dynamics(mixer):
                 "comp": {
                     "on": comp_on,
                     "threshold": round(comp_thr, 3) if comp_thr else 0.5,
-                    "ratio": round(comp_ratio, 3) if comp_ratio else 0.5
+                    "ratio": f"{comp_ratio}:1"
                 }
             }
         }

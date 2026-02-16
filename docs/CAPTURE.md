@@ -93,7 +93,7 @@ Output aggregates 100 RTA bins into 9 practical bands:
 | high | 8-20kHz | Sparkle, extreme air |
 
 ### Output Metrics
-- `avg`: Average energy (RMS of absolute values)
+- `avg`: Average energy (mean of absolute values)
 - `peak`: Maximum value seen
 - `variance`: How much it fluctuates
   - `high` = transient (drums)

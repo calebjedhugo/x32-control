@@ -48,7 +48,7 @@ Shows fader, EQ, mute, dynamics, and FX changes between sessions.
 | `python scripts/query.py --channel 5` | Get channel info |
 | `python scripts/query.py --channel 5 --eq` | Get channel EQ |
 | `python scripts/control.py --channel 5 --fader -10dB` | Set fader |
-| `python scripts/control.py --channel 5 --mute` | Mute channel |
+| `python scripts/control.py --channel 5 --gate-threshold 0.4` | Set gate threshold |
 | `python scripts/control.py --channel 5 --fader -10dB --dry-run` | Preview change |
 
 ## Channel Parsing
@@ -67,7 +67,7 @@ Scripts accept: `--fader 0dB` or `--fader -10dB`
 
 ## Common OSC Addresses
 
-For raw control: `python scripts/control.py --raw <address> <value>`
+For raw control: `python scripts/control.py <address> <value>` (positional args, no flag needed)
 
 | Function | Address |
 |----------|---------|

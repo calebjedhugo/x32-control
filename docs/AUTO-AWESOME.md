@@ -1,0 +1,1 @@
+/Users/calebhugo/Development/personal dev work.nosync/x32-control/.claude/commands/x32-auto-awesome.md

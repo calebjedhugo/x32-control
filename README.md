@@ -4,8 +4,9 @@ Python scripts for controlling Behringer X-32 digital mixer via OSC (Open Sound 
 
 ## Features
 
-- **Real-time control**: Direct OSC communication with X-32 hardware
-- **Complete mixer state capture**: Snapshot all settings to JSON
+- **Session capture + analysis**: Capture full mixer state (channels, buses, FX, routing, meters) then analyze for EQ issues, gain staging, masking conflicts, and livestream routing problems
+- **Auto-awesome**: Claude Code skill (`/x32-auto-awesome`) that orchestrates multi-pass mix optimization using capture, analysis, and control scripts together
+- **Real-time control**: Direct OSC communication with X-32 hardware, with readback verification
 - **Level monitoring**: Sample and analyze channel levels over time
 - **Flexible querying**: Read any parameter (faders, EQ, dynamics, routing)
 - **Safe modifications**: Dry-run mode to preview changes before executing
@@ -64,6 +65,25 @@ python scripts/query.py --channel 1
 If successful, you'll see channel 1's current settings in JSON format.
 
 ## Usage
+
+### Session Capture + Analysis (Primary Workflow)
+
+The main workflow is to capture the full mixer state, then analyze it for issues:
+
+```bash
+# 1. Capture everything (channels, buses, FX, routing, meters)
+python scripts/session_capture.py --duration 5
+
+# 2. Analyze the capture (outputs JSON with findings and fix commands)
+python scripts/analyze.py
+
+# 3. Human-readable report
+python scripts/analyze.py --text
+
+# 4. RTA frequency analysis for a specific channel (always use --update-session)
+python scripts/rta_listen.py --channel 26 --update-session
+python scripts/rta_listen.py --channel 1 --until-confident --update-session
+```
 
 ### Snapshot - Capture Full Mixer State
 
@@ -131,22 +151,16 @@ python scripts/control.py --channel 5 --fader -10dB
 # Set fader by float (0.0-1.0)
 python scripts/control.py --channel 5 --fader 0.75
 
-# Mute/unmute
-python scripts/control.py --channel 5 --mute
-python scripts/control.py --channel 5 --unmute
-
-# Set channel name
-python scripts/control.py --channel 5 --name "Vocals"
-
-# Adjust EQ band
-python scripts/control.py --channel 5 --eq-band 2 --freq 2500 --gain 3.0 --q 1.5
+# Adjust EQ band (all values are raw 0.0-1.0)
+# freq: log scale (0.0=20Hz, 1.0=20kHz), gain: 0.5=0dB, q: 0.0-1.0
+python scripts/control.py --channel 5 --eq-band 2 --freq 0.55 --gain 0.6 --q 0.35
 
 # Toggle EQ on/off
 python scripts/control.py --channel 5 --eq-on
 python scripts/control.py --channel 5 --eq-off
 
-# Set compressor threshold
-python scripts/control.py --channel 5 --comp-threshold -20
+# Set compressor threshold (raw 0.0-1.0 value)
+python scripts/control.py --channel 5 --comp-threshold 0.6
 
 # Set bus send level
 python scripts/control.py --channel 5 --send-bus 1 --level 0.5
@@ -154,8 +168,8 @@ python scripts/control.py --channel 5 --send-bus 1 --level 0.5
 # Preview changes without executing (dry run)
 python scripts/control.py --channel 5 --fader -10dB --dry-run
 
-# Raw OSC command
-python scripts/control.py --raw /ch/05/eq/1/g 0.65
+# Raw OSC command (positional args, no flag needed)
+python scripts/control.py /ch/05/eq/1/g 0.65
 ```
 
 ### Scenes - Manage Mixer Scenes
@@ -237,15 +251,26 @@ x32-control/
 ├── requirements.txt       # Python dependencies
 ├── config.json            # Your mixer configuration (gitignored)
 ├── config.example.json    # Configuration template
-├── .gitignore
+├── docs/
+│   ├── CAPTURE.md         # Session capture workflow
+│   ├── CHANNELS.md        # Channel details, personnel, stage layout
+│   ├── COMMANDS.md        # Command reference
+│   ├── TECHNICAL.md       # OSC addresses, library quirks
+│   └── VENUE.md           # Room acoustics, PA, known issues
 ├── scripts/
-│   ├── common.py          # Shared utilities
-│   ├── snapshot.py        # Full state capture
-│   ├── monitor.py         # Level monitoring
-│   ├── query.py           # Parameter queries
+│   ├── common.py          # Shared utilities (config, connection, conversions)
+│   ├── session_capture.py # Primary capture: all settings + meter data
+│   ├── analyze.py         # Mix analysis engine (offline, JSON output)
+│   ├── diff_sessions.py   # Compare two session captures
+│   ├── rta_listen.py      # On-demand RTA frequency analysis
 │   ├── control.py         # Parameter modifications
+│   ├── query.py           # Parameter queries
+│   ├── capture.py         # Meter-only capture
+│   ├── snapshot.py        # Full state dump
+│   ├── monitor.py         # Level monitoring
 │   └── scenes.py          # Scene management
-└── snapshots/             # Saved mixer states
+├── captures/              # Session capture JSON files
+└── snapshots/             # Full state dumps
 ```
 
 ## Troubleshooting
@@ -276,7 +301,7 @@ pip install -r requirements.txt
 
 1. Check that you're connected to the actual hardware (not just X32-Edit)
 2. Verify the OSC address is correct
-3. Try a simple test: `python scripts/control.py --channel 1 --mute`
+3. Try a simple test: `python scripts/control.py --channel 1 --fader -10dB --dry-run`
 
 ## License
 

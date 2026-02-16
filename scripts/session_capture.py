@@ -18,6 +18,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import math
 import socket
 import struct
 import sys
@@ -193,6 +194,19 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
         "on": main_on,
     }
 
+    # Routing: does this channel feed main LR?
+    st = await reliable_query(mixer, f'{ch_addr}/mix/st', default=0)
+    settings["routing"] = {
+        "main_lr": int(st) == 1 if st is not None else True,
+    }
+
+    # DCA membership (bitmask: bit0=DCA1, bit1=DCA2, etc.)
+    dca_bits = await reliable_query(mixer, f'{ch_addr}/grp/dca', default=0)
+    if dca_bits is not None and int(dca_bits) > 0:
+        settings["dca_groups"] = [i + 1 for i in range(8) if int(dca_bits) & (1 << i)]
+    else:
+        settings["dca_groups"] = []
+
     return settings
 
 
@@ -238,6 +252,33 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
         "on": insert_on,
         "fx_slot": (int(insert_sel) // 2) + 1 if insert_on and insert_sel is not None else None,
     }
+
+    # Routing: does this bus feed main LR?
+    st = await reliable_query(mixer, f'{bus_addr}/mix/st', default=0)
+    settings["routing"] = {
+        "main_lr": int(st) == 1 if st is not None else False,
+    }
+
+    # Matrix sends from this bus (6 matrices)
+    matrix_sends = {}
+    for mtx_num in range(1, 7):
+        level = await reliable_query(mixer, f'{bus_addr}/mix/{mtx_num:02d}/level', default=0.0)
+        on = await reliable_query(mixer, f'{bus_addr}/mix/{mtx_num:02d}/on', default=0)
+        on_val = int(on) == 1 if on is not None else False
+        if on_val or (level is not None and float(level) > 0.01):
+            matrix_sends[f"mtx{mtx_num:02d}"] = {
+                "level": round(float(level), 3) if level else 0.0,
+                "level_db": format_db(float(level)) if level else "-inf dB",
+                "on": on_val,
+            }
+    settings["matrix_sends"] = matrix_sends
+
+    # DCA membership
+    dca_bits = await reliable_query(mixer, f'{bus_addr}/grp/dca', default=0)
+    if dca_bits is not None and int(dca_bits) > 0:
+        settings["dca_groups"] = [i + 1 for i in range(8) if int(dca_bits) & (1 << i)]
+    else:
+        settings["dca_groups"] = []
 
     return settings
 
@@ -293,7 +334,85 @@ async def capture_main_settings(mixer) -> Dict:
         "threshold": round(await reliable_query(mixer, '/main/st/dyn/thr', default=0.5), 3),
     }
 
+    # Matrix sends from main (6 matrices)
+    matrix_sends = {}
+    for mtx_num in range(1, 7):
+        level = await reliable_query(mixer, f'/main/st/mix/{mtx_num:02d}/level', default=0.0)
+        on = await reliable_query(mixer, f'/main/st/mix/{mtx_num:02d}/on', default=0)
+        on_val = int(on) == 1 if on is not None else False
+        if on_val or (level is not None and float(level) > 0.01):
+            matrix_sends[f"mtx{mtx_num:02d}"] = {
+                "level": round(float(level), 3) if level else 0.0,
+                "level_db": format_db(float(level)) if level else "-inf dB",
+                "on": on_val,
+            }
+    settings["matrix_sends"] = matrix_sends
+
     return settings
+
+
+async def capture_matrix_settings(mixer, mtx_num: int) -> Dict:
+    """Capture full settings for a matrix output."""
+    mtx_addr = f"/mtx/{mtx_num:02d}"
+    state = mixer.state()
+
+    # Matrix fader from state (direct query is unreliable)
+    fader = state.get(f'/mtx/{mtx_num}/mix_fader', 0.0)
+
+    settings = {
+        "name": await reliable_query(mixer, f'{mtx_addr}/config/name', default="") or "",
+        "fader": round(float(fader), 3) if fader else 0.0,
+        "fader_db": format_db(float(fader)) if fader else "-inf dB",
+        "mute": state.get(f'/mtx/{mtx_num}/mix_on', True) == False,
+    }
+
+    # Matrix EQ (6 bands)
+    eq_on = await reliable_query(mixer, f'{mtx_addr}/eq/on', default=0) == 1
+    eq_bands = []
+    for band in range(1, 7):
+        eq_bands.append({
+            "band": band,
+            "freq": round(await reliable_query(mixer, f'{mtx_addr}/eq/{band}/f', default=0.5), 3),
+            "gain": round(await reliable_query(mixer, f'{mtx_addr}/eq/{band}/g', default=0.5), 3),
+            "q": round(await reliable_query(mixer, f'{mtx_addr}/eq/{band}/q', default=0.5), 3),
+        })
+    settings["eq"] = {"on": eq_on, "bands": eq_bands}
+
+    # Matrix compressor
+    settings["compressor"] = {
+        "on": await reliable_query(mixer, f'{mtx_addr}/dyn/on', default=0) == 1,
+        "threshold": round(await reliable_query(mixer, f'{mtx_addr}/dyn/thr', default=0.5), 3),
+    }
+
+    # Matrix insert
+    insert_on = await reliable_query(mixer, f'{mtx_addr}/insert/on', default=0) == 1
+    insert_sel = await reliable_query(mixer, f'{mtx_addr}/insert/sel', default=0)
+    settings["insert"] = {
+        "on": insert_on,
+        "fx_slot": (int(insert_sel) // 2) + 1 if insert_on and insert_sel is not None else None,
+    }
+
+    return settings
+
+
+async def capture_dca_settings(mixer) -> Dict:
+    """Capture DCA group settings (faders, names, membership)."""
+    state = mixer.state()
+    dcas = {}
+
+    for dca_num in range(1, 9):
+        name = await reliable_query(mixer, f'/dca/{dca_num}/config/name', default="")
+        fader = state.get(f'/dca/{dca_num}/mix_fader', 0.0)
+        on = state.get(f'/dca/{dca_num}/mix_on', True)
+
+        dcas[f"dca{dca_num}"] = {
+            "name": name or "",
+            "fader": round(float(fader), 3) if fader else 0.0,
+            "fader_db": format_db(float(fader)) if fader else "-inf dB",
+            "mute": on == False if on is not None else False,
+        }
+
+    return dcas
 
 
 def parse_meter_blob(data: bytes) -> Dict[str, int]:
@@ -398,7 +517,7 @@ def analyze_gain_staging(channel_peaks: Dict, channel_names: Dict) -> Dict:
         ratio = peak / avg_peak if avg_peak > 0 else 1
 
         if ratio > 2.0:  # More than 2x average
-            db_diff = 20 * (ratio - 1) if ratio > 1 else 0
+            db_diff = 20 * math.log10(ratio)
             issues.append({
                 "channel": ch_num,
                 "name": name,
@@ -407,7 +526,7 @@ def analyze_gain_staging(channel_peaks: Dict, channel_names: Dict) -> Dict:
                 "detail": f"Running {db_diff:.0f}dB above average - consider reducing preamp gain",
             })
         elif ratio < 0.3:  # Less than 30% of average
-            db_diff = 20 * (1 - ratio) if ratio < 1 else 0
+            db_diff = -20 * math.log10(ratio)
             issues.append({
                 "channel": ch_num,
                 "name": name,
@@ -423,30 +542,84 @@ def analyze_gain_staging(channel_peaks: Dict, channel_names: Dict) -> Dict:
     }
 
 
-def build_signal_paths(channels: Dict, buses: Dict) -> Dict:
-    """Build signal path mapping showing what routes where."""
-    paths = {}
+def build_signal_paths(channels: Dict, buses: Dict, matrices: Dict = None,
+                       main: Dict = None) -> Dict:
+    """Build signal path mapping showing what routes where.
 
-    # Group channels by their bus destinations
+    Includes:
+    - Channel → bus sends
+    - Channel → main LR routing
+    - Bus → main LR routing
+    - Bus → matrix sends
+    - Main → matrix sends
+    """
+    paths = {
+        "bus_paths": {},
+        "main_sources": [],
+        "matrix_feeds": {},
+    }
+
+    # --- Channel → bus sends ---
     for ch_key, ch_data in channels.items():
+        ch_num = int(ch_key.replace('ch', ''))
+        ch_name = ch_data.get("name", ch_key)
+
+        # Track channels that route to main LR
+        routes_to_main = ch_data.get("routing", {}).get("main_lr", True)
+        if routes_to_main and not ch_data.get("mute", False):
+            paths["main_sources"].append({
+                "channel": ch_num,
+                "name": ch_name,
+                "fader_db": ch_data.get("fader_db"),
+            })
+
         sends = ch_data.get("sends", {})
         for bus_key, send_data in sends.items():
             if send_data.get("on"):
-                if bus_key not in paths:
-                    bus_num = int(bus_key.replace('bus', ''))
+                if bus_key not in paths["bus_paths"]:
                     bus_name = buses.get(bus_key, {}).get("name", bus_key)
-                    paths[bus_key] = {
+                    bus_data = buses.get(bus_key, {})
+                    paths["bus_paths"][bus_key] = {
                         "name": bus_name,
                         "sources": [],
-                        "fx_insert": buses.get(bus_key, {}).get("insert", {}).get("fx_slot"),
+                        "fx_insert": bus_data.get("insert", {}).get("fx_slot"),
+                        "routes_to_main": bus_data.get("routing", {}).get("main_lr", False),
+                        "matrix_sends": bus_data.get("matrix_sends", {}),
                     }
-                ch_num = int(ch_key.replace('ch', ''))
-                ch_name = ch_data.get("name", ch_key)
-                paths[bus_key]["sources"].append({
+                paths["bus_paths"][bus_key]["sources"].append({
                     "channel": ch_num,
                     "name": ch_name,
                     "send_level": send_data.get("level_db"),
                 })
+
+    # --- Matrix feeds (what feeds each matrix) ---
+    if matrices:
+        for mtx_key, mtx_data in matrices.items():
+            mtx_name = mtx_data.get("name", mtx_key)
+            feeds = {"from_buses": [], "from_main": None}
+
+            # Check bus → matrix sends
+            for bus_key, bus_data in buses.items():
+                mtx_sends = bus_data.get("matrix_sends", {})
+                if mtx_key in mtx_sends and mtx_sends[mtx_key].get("on"):
+                    feeds["from_buses"].append({
+                        "bus": bus_key,
+                        "name": bus_data.get("name", bus_key),
+                        "level_db": mtx_sends[mtx_key].get("level_db"),
+                    })
+
+            # Check main → matrix sends
+            if main:
+                main_mtx_sends = main.get("matrix_sends", {})
+                if mtx_key in main_mtx_sends and main_mtx_sends[mtx_key].get("on"):
+                    feeds["from_main"] = {
+                        "level_db": main_mtx_sends[mtx_key].get("level_db"),
+                    }
+
+            paths["matrix_feeds"][mtx_key] = {
+                "name": mtx_name,
+                "feeds": feeds,
+            }
 
     return paths
 
@@ -510,6 +683,8 @@ Example:
             },
             "channels": {},
             "buses": {},
+            "matrices": {},
+            "dcas": {},
             "fx": {},
             "main": {},
             "analysis": {},
@@ -549,6 +724,17 @@ Example:
         print("Capturing main bus settings...", file=sys.stderr)
         result["main"] = await capture_main_settings(mixer)
 
+        # Capture all matrices
+        print("Capturing matrix settings...", file=sys.stderr)
+        for mtx_num in range(1, 7):
+            result["matrices"][f"mtx{mtx_num:02d}"] = await capture_matrix_settings(mixer, mtx_num)
+        print("  Matrices 1-6 done", file=sys.stderr)
+
+        # Capture DCA groups
+        print("Capturing DCA settings...", file=sys.stderr)
+        result["dcas"] = await capture_dca_settings(mixer)
+        print("  DCAs 1-8 done", file=sys.stderr)
+
         # Capture meters
         channel_peaks = await capture_meters(
             config["mixer_ip"], config["mixer_port"], args.duration
@@ -567,7 +753,8 @@ Example:
         # Build signal paths
         print("Building signal paths...", file=sys.stderr)
         result["analysis"]["signal_paths"] = build_signal_paths(
-            result["channels"], result["buses"]
+            result["channels"], result["buses"],
+            result["matrices"], result["main"]
         )
 
         # Add FX routing summary
@@ -582,6 +769,9 @@ Example:
             for bus_key, bus_data in result["buses"].items():
                 if bus_data.get("insert", {}).get("fx_slot") == fx_num:
                     used_by.append({"type": "bus", "id": bus_key, "name": bus_data.get("name")})
+            for mtx_key, mtx_data in result["matrices"].items():
+                if mtx_data.get("insert", {}).get("fx_slot") == fx_num:
+                    used_by.append({"type": "matrix", "id": mtx_key, "name": mtx_data.get("name")})
 
             if used_by or fx_data.get("type_id", 0) != 0:
                 fx_routing[fx_key] = {

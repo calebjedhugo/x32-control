@@ -85,46 +85,58 @@ def main_eq_on_fix() -> str:
 
 
 # =============================================================================
-# Channel classification
+# Channel classification (label-driven)
 # =============================================================================
 
-# Channel group assignments (from config.json favorites)
-CHANNEL_GROUPS = {
-    "vocal": [1, 2, 3, 4, 5, 6, 7],
-    "speaking": [8, 9],
-    "auxiliary": [10, 11, 12, 13, 14, 15, 16],
-    "piano": [17, 18],
-    "acoustic_guitar": [19, 20],
-    "flute": [21],
-    "drums": [22, 23, 24, 25, 26, 27, 28],
-    "keys": [29, 30],
-    "bass": [31],
-    "electric_guitar": [32],
-}
-
-# More specific drum channel types
-DRUM_CHANNEL_TYPES = {
-    22: "floor_tom",
-    23: "rack_tom",
-    24: "rack_tom",
-    25: "snare",
-    26: "kick",
-    27: "overhead",
-    28: "overhead",
-}
-
-
-def classify_channel(ch_num: int) -> str:
-    """Return the source type for a channel number."""
-    for group, channels in CHANNEL_GROUPS.items():
-        if ch_num in channels:
-            return group
-    return "unknown"
+# Keywords checked in order — first match wins. More specific patterns first.
+_LABEL_RULES = [
+    # Drums
+    ("kick",            ["kick", "bass drum", "bassdrum"]),
+    ("snare",           ["snare"]),
+    ("floor_tom",       ["floor tom", "flr tom"]),
+    ("rack_tom",        ["mid tom", "hi tom", "rack tom", "mid high"]),
+    ("overhead",        ["overhead", "oh-", "oh ", "hi-hat", "hihat", "ride", "cymbal"]),
+    # Instruments (specific before generic)
+    ("piano",           ["piano", "pno"]),
+    ("flute",           ["flute", "flt"]),
+    ("violin",          ["violin", "fiddle"]),
+    ("bass",            ["bass"]),
+    ("keys",            ["kb-", "kb ", "keyboard", "keys", "synth", "electric key", "elec key"]),
+    ("electric_guitar", ["elec gtr", "electric gtr", "elec guitar", "electric guitar", "amp sim"]),
+    ("acoustic_guitar", ["acoustic", "acou", "guitar", "gtr"]),
+    # Speaking
+    ("speaking",        ["pastor", "announce", "speak", "headset"]),
+    # Auxiliary
+    ("ambient",         ["ambient", "amb "]),
+    ("computer",        ["computer", "pc ", "playback"]),
+    ("auxiliary",       ["aux", "phone", "zoom"]),
+]
 
 
-def drum_subtype(ch_num: int) -> str:
-    """Return specific drum type (kick, snare, etc.)."""
-    return DRUM_CHANNEL_TYPES.get(ch_num, "drum")
+def classify_channel(ch_name: str) -> str:
+    """Classify a channel by its mixer label. Returns source type.
+
+    Labels should be descriptive (e.g. 'Kick', 'Tammy', 'Elec Gtr').
+    Unrecognized non-empty names default to 'vocal' (most common case).
+    """
+    if not ch_name or not ch_name.strip():
+        return "unknown"
+    name = ch_name.lower().strip()
+    for ch_type, keywords in _LABEL_RULES:
+        if any(kw in name for kw in keywords):
+            return ch_type
+    # Default: person names with no instrument keyword are vocals
+    return "vocal"
+
+
+def find_channels_by_type(channels: dict, target_type: str) -> List[Tuple[int, dict]]:
+    """Find all channels matching a source type. Returns [(ch_num, ch_data), ...]."""
+    results = []
+    for ch_key, ch_data in channels.items():
+        ch_num = int(ch_key.replace("ch", ""))
+        if classify_channel(ch_data.get("name", "")) == target_type:
+            results.append((ch_num, ch_data))
+    return results
 
 
 # =============================================================================
@@ -173,6 +185,14 @@ TARGETS = {
         "mud_range": (200, 400),
         "comp_ratio_range": (2.0, 4.0),
         "label": "flute",
+    },
+    "violin": {
+        "hpf_on": True,
+        "hpf_range": (150, 300),       # Violin fundamental starts ~196Hz (G3)
+        "max_boost_db": 4.0,
+        "mud_range": (200, 400),
+        "comp_ratio_range": (2.0, 4.0),
+        "label": "violin",
     },
     "keys": {
         "hpf_on": True,
@@ -240,14 +260,13 @@ DRUM_TARGETS = {
 }
 
 
-def get_target(ch_num: int) -> Optional[dict]:
-    """Get target profile for a channel."""
-    ch_type = classify_channel(ch_num)
-    if ch_type == "drums":
-        sub = drum_subtype(ch_num)
-        return DRUM_TARGETS.get(sub)
-    if ch_type == "auxiliary":
-        return None  # Skip auxiliary channels
+def get_target(ch_name: str) -> Optional[dict]:
+    """Get target profile for a channel by its label."""
+    ch_type = classify_channel(ch_name)
+    if ch_type in DRUM_TARGETS:
+        return DRUM_TARGETS[ch_type]
+    if ch_type in ("ambient", "computer", "auxiliary", "unknown"):
+        return None  # Skip non-musical channels
     return TARGETS.get(ch_type)
 
 
@@ -361,27 +380,15 @@ def check_eq(ch_num: int, ch_data: dict, target: dict) -> List[Finding]:
         freq_str = format_freq(freq_hz)
         gain_str = format_gain(gain_db)
 
-        # Check excessive boosts
-        if gain_db > max_boost:
-            findings.append(Finding(
-                "warning", label, "eq",
-                f"Band {band_num}: {gain_str} at {freq_str} exceeds {format_gain(max_boost)} limit for {source_label}",
-                f"Consider reducing to under {format_gain(max_boost)}",
-                fix=eq_gain_fix(ch_num, band_num, max_boost)
-            ))
+        # Check mud range boosts first (most specific, subsumes excessive boost)
+        # Exempt channels not routed to main LR (e.g. Ambient L/R ch12-13
+        # which are livestream-only) — the mud range warning is FOH-specific
+        routes_to_main = ch_data.get("routing", {}).get("main_lr", True)
+        is_mud = gain_db > 1.0 and mud_lo <= freq_hz <= mud_hi and routes_to_main
+        is_presence = (gain_db > max_presence and 2000 <= freq_hz <= 4000 and
+                       classify_channel(ch_data.get("name", "")) in ("vocal", "speaking"))
 
-        # Check presence boost stacking (2-4kHz on vocals)
-        if gain_db > max_presence and 2000 <= freq_hz <= 4000:
-            if classify_channel(ch_num) in ("vocal", "speaking"):
-                findings.append(Finding(
-                    "warning", label, "eq",
-                    f"Band {band_num}: {gain_str} boost at {freq_str} in presence range",
-                    f"Presence boosts stack across vocals. Keep under {format_gain(max_presence)} to avoid harshness",
-                    fix=eq_gain_fix(ch_num, band_num, max_presence)
-                ))
-
-        # Check mud range boosts (room issue: 200-400Hz)
-        if gain_db > 1.0 and mud_lo <= freq_hz <= mud_hi:
+        if is_mud:
             findings.append(Finding(
                 "warning", label, "eq",
                 f"Band {band_num}: {gain_str} boost at {freq_str} in room problem area ({mud_lo}-{mud_hi}Hz)",
@@ -389,21 +396,36 @@ def check_eq(ch_num: int, ch_data: dict, target: dict) -> List[Finding]:
                 "Boosts here add to the problem. Consider cutting or staying flat.",
                 fix=eq_gain_fix(ch_num, band_num, 0.0)
             ))
-
-        # Note good subtractive cuts in problem range
-        if gain_db < -2.0 and 180 <= freq_hz <= 500:
+        elif is_presence:
             findings.append(Finding(
-                "good", label, "eq",
-                f"Band {band_num}: {gain_str} cut at {freq_str} - good room compensation",
-                ""
+                "warning", label, "eq",
+                f"Band {band_num}: {gain_str} boost at {freq_str} in presence range",
+                f"Presence boosts stack across vocals. Keep under {format_gain(max_presence)} to avoid harshness",
+                fix=eq_gain_fix(ch_num, band_num, max_presence)
             ))
+        elif gain_db > max_boost:
+            findings.append(Finding(
+                "warning", label, "eq",
+                f"Band {band_num}: {gain_str} at {freq_str} exceeds {format_gain(max_boost)} limit for {source_label}",
+                f"Consider reducing to under {format_gain(max_boost)}",
+                fix=eq_gain_fix(ch_num, band_num, max_boost)
+            ))
+
+        # Note good subtractive cuts in problem range (skip bass/kick where these freqs are fundamental)
+        if gain_db < -2.0 and 200 <= freq_hz <= 400:
+            ch_type = classify_channel(ch_data.get("name", ""))
+            if ch_type not in ("bass", "kick"):
+                findings.append(Finding(
+                    "good", label, "eq",
+                    f"Band {band_num}: {gain_str} cut at {freq_str} - good room compensation",
+                    ""
+                ))
 
     return findings
 
 
 def check_compressor(ch_num: int, ch_data: dict, target: dict) -> List[Finding]:
-    """Check compressor settings against target profile.
-    No fix commands - control.py does not support --comp-ratio."""
+    """Check compressor settings against target profile."""
     findings = []
     label = ch_label(ch_num, ch_data)
     comp = ch_data.get("compressor", {})
@@ -437,34 +459,68 @@ def check_compressor(ch_num: int, ch_data: dict, target: dict) -> List[Finding]:
     return findings
 
 
-def check_fader_balance(ch_num: int, ch_data: dict) -> List[Finding]:
+def check_fader_balance(ch_num: int, ch_data: dict, dcas: dict = None) -> List[Finding]:
     """Check for extreme fader positions that suggest gain staging issues.
-    No fix commands - these are gain staging issues requiring preamp adjustment."""
+    No fix commands - these are gain staging issues requiring preamp adjustment.
+
+    When DCA data is available, computes effective fader level by multiplying
+    channel fader * DCA fader(s) in linear space (minimum DCA fader wins).
+    A channel at unity with its DCA at -10dB is effectively at -10dB.
+    """
     findings = []
     label = ch_label(ch_num, ch_data)
     fader = ch_data.get("fader", 0.0)
 
-    # Use mixer-reported dB when available
-    fader_db_str = ch_data.get("fader_db", "")
-    if not fader_db_str:
-        db = fader_to_db(fader)
-        fader_db_str = f"{db:.1f} dB" if not math.isinf(db) else "-inf dB"
-
     if ch_data.get("mute", False):
         return findings  # Skip muted channels
 
-    if fader > 0.9:  # Above +6dB
+    # Compute effective fader level accounting for DCA groups
+    # X32 multiplies all assigned DCA faders together (not just the lowest)
+    effective_fader = fader
+    dca_note = ""
+    if dcas and ch_data.get("dca_groups"):
+        combined_dca = 1.0
+        dca_names = []
+        for dca_num in ch_data["dca_groups"]:
+            dca_key = f"dca{dca_num}"
+            dca_data = dcas.get(dca_key, {})
+            dca_fader = dca_data.get("fader", 1.0)
+            combined_dca *= dca_fader
+            if dca_fader < 0.95:
+                dca_db = fader_to_db(dca_fader)
+                dca_db_str = f"{dca_db:.1f}dB" if not math.isinf(dca_db) else "-inf"
+                dca_names.append(f"'{dca_data.get('name', dca_key)}' at {dca_db_str}")
+        effective_fader = fader * combined_dca
+        if dca_names:
+            dca_note = f" (DCA: {', '.join(dca_names)})"
+
+    # Use effective fader for dB display
+    effective_db = fader_to_db(effective_fader)
+    effective_db_str = f"{effective_db:.1f} dB" if not math.isinf(effective_db) else "-inf dB"
+
+    # Also show raw fader for context when DCA is pulling it down
+    raw_db = fader_to_db(fader)
+    raw_db_str = f"{raw_db:.1f} dB" if not math.isinf(raw_db) else "-inf dB"
+
+    if effective_fader > 0.9:  # Above +6dB effective
         findings.append(Finding(
             "warning", label, "gain",
-            f"Fader at {fader_db_str} - near maximum",
+            f"Effective fader at {effective_db_str}{dca_note} - near maximum",
             "May need more preamp gain instead of pushing the fader this high"
         ))
-    elif fader < 0.3 and fader > 0.01:  # Very low but not off
-        findings.append(Finding(
-            "suggestion", label, "gain",
-            f"Fader at {fader_db_str} - very low",
-            "May have too much preamp gain. Consider reducing preamp and raising fader toward unity"
-        ))
+    elif effective_fader < 0.3 and effective_fader > 0.01:  # Very low but not off
+        if dca_note:
+            findings.append(Finding(
+                "suggestion", label, "gain",
+                f"Effective fader at {effective_db_str}{dca_note} (channel fader at {raw_db_str})",
+                "Effective level is low due to DCA position. Check if DCA is intentionally pulled down."
+            ))
+        else:
+            findings.append(Finding(
+                "suggestion", label, "gain",
+                f"Fader at {effective_db_str} - very low",
+                "May have too much preamp gain. Consider reducing preamp and raising fader toward unity"
+            ))
 
     return findings
 
@@ -494,7 +550,7 @@ def check_vocal_presence_stacking(channels: dict) -> List[Finding]:
 
     for ch_key, ch_data in channels.items():
         ch_num = int(ch_key.replace("ch", ""))
-        if classify_channel(ch_num) != "vocal":
+        if classify_channel(ch_data.get("name", "")) != "vocal":
             continue
         if ch_data.get("mute", False):
             continue
@@ -547,10 +603,11 @@ def check_piano_keyboard_masking(channels: dict) -> List[Finding]:
         if ch_data.get("mute", False):
             continue
 
-        if ch_num in (17, 18):
+        ch_type = classify_channel(ch_data.get("name", ""))
+        if ch_type == "piano":
             for band_num, freq_hz, gain_db in get_active_eq_bands(ch_data):
                 piano_bands.append((ch_num, band_num, freq_hz, gain_db))
-        elif ch_num in (29, 30):
+        elif ch_type == "keys":
             for band_num, freq_hz, gain_db in get_active_eq_bands(ch_data):
                 kb_bands.append((ch_num, band_num, freq_hz, gain_db))
 
@@ -585,8 +642,14 @@ def check_kick_bass_conflict(channels: dict) -> List[Finding]:
     """Check kick vs bass low-end frequency overlap."""
     findings = []
 
-    kick_data = channels.get("ch26", {})
-    bass_data = channels.get("ch31", {})
+    kick_channels = find_channels_by_type(channels, "kick")
+    bass_channels = find_channels_by_type(channels, "bass")
+
+    if not kick_channels or not bass_channels:
+        return findings
+
+    kick_num, kick_data = kick_channels[0]
+    bass_num, bass_data = bass_channels[0]
 
     if kick_data.get("mute", False) or bass_data.get("mute", False):
         return findings
@@ -610,7 +673,7 @@ def check_kick_bass_conflict(channels: dict) -> List[Finding]:
                     f"Bass {format_gain(b_gain)} at {format_freq(b_freq)}",
                     "Choose who owns the sub: typically kick gets 50-80Hz fundamental, "
                     "bass gets 80-120Hz. One boosts, the other cuts at that frequency.",
-                    fix=eq_gain_fix(31, b_bn, 0.0)
+                    fix=eq_gain_fix(bass_num, b_bn, 0.0)
                 ))
                 return findings
 
@@ -728,6 +791,274 @@ def check_main_bus(main_data: dict) -> List[Finding]:
 # Session-level checks
 # =============================================================================
 
+def check_livestream_routing(session: dict) -> List[Finding]:
+    """Check that subgroup buses properly feed the livestream matrices (Cam L/R).
+
+    Only checks buses that are actual subgroups: not feeding main LR, have a
+    non-zero fader, and have at least one active matrix send (indicating they're
+    meant to feed outputs other than main).
+    """
+    findings = []
+    buses = session.get("buses", {})
+    matrices = session.get("matrices", {})
+    channels = session.get("channels", {})
+
+    if not matrices:
+        return findings
+
+    # Find livestream matrices by name
+    cam_matrices = {}
+    for mtx_key, mtx_data in matrices.items():
+        name = mtx_data.get("name", "").lower()
+        if "cam" in name:
+            cam_matrices[mtx_key] = mtx_data
+
+    if not cam_matrices:
+        return findings
+
+    # Identify actual subgroup buses: not feeding main, fader up, and has at
+    # least one active matrix send at non-zero level (distinguishes subgroups
+    # from monitor buses which typically have zero-level matrix sends)
+    subgroup_buses = {}
+    for bus_key, bus_data in buses.items():
+        routing = bus_data.get("routing", {})
+        if routing.get("main_lr", True):
+            continue  # Feeds main, not a subgroup
+
+        fader = bus_data.get("fader", 0)
+        if fader < 0.01:
+            continue  # Bus fader is down
+
+        # Check if this bus has any active matrix sends at non-zero level
+        mtx_sends = bus_data.get("matrix_sends", {})
+        has_active_mtx_send = any(
+            s.get("on") and s.get("level", 0) > 0.01
+            for s in mtx_sends.values()
+        )
+        if not has_active_mtx_send:
+            continue  # No active matrix sends — likely a monitor bus
+
+        bus_name = bus_data.get("name", bus_key)
+        subgroup_buses[bus_key] = bus_data
+
+    # Check each subgroup feeds each cam matrix
+    for mtx_key, mtx_data in cam_matrices.items():
+        mtx_name = mtx_data.get("name", mtx_key)
+        for bus_key, bus_data in subgroup_buses.items():
+            bus_name = bus_data.get("name", bus_key)
+            mtx_sends = bus_data.get("matrix_sends", {})
+            send = mtx_sends.get(mtx_key, {})
+
+            if not send.get("on", False):
+                findings.append(Finding(
+                    "critical", f"Livestream: {bus_name}", "routing",
+                    f"{bus_name} ({bus_key}) is NOT sending to {mtx_name} ({mtx_key})",
+                    f"This subgroup won't be heard on the {mtx_name} livestream feed"
+                ))
+            elif send.get("level", 0) < 0.01:
+                findings.append(Finding(
+                    "warning", f"Livestream: {bus_name}", "routing",
+                    f"{bus_name} ({bus_key}) send to {mtx_name} is at {send.get('level_db', '-inf dB')}",
+                    f"Send is ON but level is zero - {bus_name} won't be heard on {mtx_name}. May be intentional (ready but silent)."
+                ))
+
+    return findings
+
+
+def check_dca_coverage(session: dict) -> List[Finding]:
+    """Check that active channels are assigned to a DCA group."""
+    findings = []
+    channels = session.get("channels", {})
+    dcas = session.get("dcas", {})
+
+    if not dcas:
+        return findings
+
+    unassigned = []
+    for ch_key, ch_data in channels.items():
+        ch_num = int(ch_key.replace("ch", ""))
+        if ch_data.get("mute", False):
+            continue
+        if ch_data.get("fader", 0) < 0.01:
+            continue
+        ch_type = classify_channel(ch_data.get("name", ""))
+        if ch_type in ("auxiliary", "ambient", "computer", "unknown"):
+            continue
+
+        dca_groups = ch_data.get("dca_groups", [])
+        if not dca_groups:
+            name = ch_data.get("name", ch_key)
+            unassigned.append(f"Ch{ch_num} {name}")
+
+    if unassigned:
+        findings.append(Finding(
+            "suggestion", "DCA Groups", "routing",
+            f"{len(unassigned)} active channel(s) not in any DCA: {', '.join(unassigned[:5])}",
+            "Unassigned channels can't be trimmed via DCA faders during the service"
+        ))
+
+    return findings
+
+
+def check_matrix_eq(session: dict) -> List[Finding]:
+    """Check livestream matrix EQ for reasonable settings."""
+    findings = []
+    matrices = session.get("matrices", {})
+
+    for mtx_key, mtx_data in matrices.items():
+        name = mtx_data.get("name", mtx_key)
+        if "cam" not in name.lower():
+            continue
+
+        eq = mtx_data.get("eq", {})
+        if not eq.get("on", False):
+            findings.append(Finding(
+                "warning", f"Matrix {name}", "eq",
+                f"Livestream matrix {name} has EQ OFF",
+                "Livestream typically needs different EQ than FOH (LF compensation, etc.)"
+            ))
+            continue
+
+        for band in eq.get("bands", []):
+            gain_db = eq_gain_to_db(band["gain"])
+            freq_hz = eq_freq_to_hz(band["freq"])
+
+            if gain_db > 6.0:
+                findings.append(Finding(
+                    "warning", f"Matrix {name}", "eq",
+                    f"Band {band['band']}: {format_gain(gain_db)} boost at {format_freq(freq_hz)}",
+                    "Large boosts on livestream matrix - check if this is intentional"
+                ))
+
+    return findings
+
+
+def check_matrix_faders(session: dict) -> List[Finding]:
+    """Check livestream matrix fader levels.
+
+    Reasonable livestream range: -10dB to 0dB. Flag if outside range.
+    """
+    findings = []
+    matrices = session.get("matrices", {})
+
+    for mtx_key, mtx_data in matrices.items():
+        name = mtx_data.get("name", mtx_key)
+        if "cam" not in name.lower():
+            continue
+
+        if mtx_data.get("mute", False):
+            findings.append(Finding(
+                "critical", f"Matrix {name}", "fader",
+                f"Livestream matrix {name} is MUTED",
+                "Livestream output is muted - no audio going to stream"
+            ))
+            continue
+
+        fader = mtx_data.get("fader", 0.0)
+        fader_db = fader_to_db(fader)
+
+        if math.isinf(fader_db):
+            findings.append(Finding(
+                "critical", f"Matrix {name}", "fader",
+                f"Livestream matrix {name} fader is at -inf dB",
+                "Fader is all the way down - no audio going to stream"
+            ))
+        elif fader_db < -10:
+            findings.append(Finding(
+                "warning", f"Matrix {name}", "fader",
+                f"Livestream matrix {name} fader at {fader_db:.1f}dB is below -10dB",
+                "Livestream level may be too low. Typical range is -10dB to 0dB."
+            ))
+        elif fader_db > 0:
+            findings.append(Finding(
+                "warning", f"Matrix {name}", "fader",
+                f"Livestream matrix {name} fader at {fader_db:.1f}dB is above 0dB",
+                "Livestream level is boosted above unity - risk of distortion on the stream."
+            ))
+        else:
+            findings.append(Finding(
+                "good", f"Matrix {name}", "fader",
+                f"Livestream matrix {name} fader at {fader_db:.1f}dB (within -10 to 0dB range)",
+                ""
+            ))
+
+    return findings
+
+
+def check_matrix_compressor(session: dict) -> List[Finding]:
+    """Check livestream matrix compressor settings.
+
+    Livestream should be tighter than FOH: lower threshold (more compression),
+    higher ratio. Flag if threshold is too high (not engaging) or ratio is too
+    low for broadcast.
+    """
+    findings = []
+    matrices = session.get("matrices", {})
+
+    for mtx_key, mtx_data in matrices.items():
+        name = mtx_data.get("name", mtx_key)
+        if "cam" not in name.lower():
+            continue
+
+        comp = mtx_data.get("compressor", {})
+
+        if not comp.get("on", False):
+            findings.append(Finding(
+                "warning", f"Matrix {name}", "dynamics",
+                f"Livestream matrix {name} compressor is OFF",
+                "Livestream benefits from compression to maintain consistent levels. "
+                "Consider enabling with a moderate ratio (3:1-5:1) and low threshold."
+            ))
+            continue
+
+        # Check threshold - livestream comp should be engaging (threshold not too high)
+        # Threshold is 0.0-1.0 raw; higher value = higher threshold = less compression
+        threshold = comp.get("threshold", 0.5)
+        if threshold > 0.7:
+            findings.append(Finding(
+                "warning", f"Matrix {name}", "dynamics",
+                f"Livestream compressor threshold is high ({threshold:.2f}) - may not be engaging",
+                "Lower the threshold so the compressor catches more of the signal. "
+                "Livestream needs tighter dynamics control than FOH.",
+                fix=f"{CMD_PREFIX} /mtx/{mtx_key.replace('mtx', '')}/dyn/thr 0.5"
+            ))
+        elif threshold < 0.2:
+            findings.append(Finding(
+                "suggestion", f"Matrix {name}", "dynamics",
+                f"Livestream compressor threshold is very low ({threshold:.2f}) - heavy compression",
+                "This may be squashing dynamics too much. Check that the stream still sounds natural."
+            ))
+        else:
+            findings.append(Finding(
+                "good", f"Matrix {name}", "dynamics",
+                f"Livestream compressor threshold at {threshold:.2f} - actively engaging",
+                ""
+            ))
+
+        # Check ratio if available (stored as string like "3:1")
+        ratio_str = comp.get("ratio", "")
+        if ratio_str:
+            try:
+                ratio_val = float(ratio_str.replace(":1", ""))
+                if ratio_val < 2.0:
+                    findings.append(Finding(
+                        "warning", f"Matrix {name}", "dynamics",
+                        f"Livestream compressor ratio {ratio_str} is low for broadcast",
+                        "Livestream typically needs tighter compression (3:1 to 5:1) "
+                        "to maintain consistent levels for viewers."
+                    ))
+                elif ratio_val > 10.0:
+                    findings.append(Finding(
+                        "suggestion", f"Matrix {name}", "dynamics",
+                        f"Livestream compressor ratio {ratio_str} is very aggressive",
+                        "This is approaching limiting territory. May sound unnatural on stream."
+                    ))
+            except (ValueError, AttributeError):
+                pass
+
+    return findings
+
+
 def check_muted_channels_with_eq(channels: dict) -> List[Finding]:
     """Flag muted channels that have significant EQ - might be forgotten settings."""
     findings = []
@@ -735,7 +1066,8 @@ def check_muted_channels_with_eq(channels: dict) -> List[Finding]:
         if not ch_data.get("mute", False):
             continue
         ch_num = int(ch_key.replace("ch", ""))
-        if classify_channel(ch_num) == "auxiliary":
+        ch_type = classify_channel(ch_data.get("name", ""))
+        if ch_type in ("auxiliary", "ambient", "computer", "unknown"):
             continue
 
         eq = ch_data.get("eq", {})
@@ -835,11 +1167,13 @@ def analyze_session(session_path: Path) -> Tuple[List[Finding], dict]:
 
     findings = []
     channels = session.get("channels", {})
+    dcas = session.get("dcas", {})
 
     # --- Per-channel checks ---
     for ch_key, ch_data in channels.items():
         ch_num = int(ch_key.replace("ch", ""))
-        target = get_target(ch_num)
+        ch_name = ch_data.get("name", "")
+        target = get_target(ch_name)
         if target is None:
             continue  # Skip auxiliary/unknown channels
 
@@ -849,17 +1183,35 @@ def analyze_session(session_path: Path) -> Tuple[List[Finding], dict]:
         findings.extend(check_hpf(ch_num, ch_data, target))
         findings.extend(check_eq(ch_num, ch_data, target))
         findings.extend(check_compressor(ch_num, ch_data, target))
-        findings.extend(check_fader_balance(ch_num, ch_data))
+        findings.extend(check_fader_balance(ch_num, ch_data, dcas))
 
     # --- Cross-channel checks ---
     findings.extend(check_vocal_presence_stacking(channels))
     findings.extend(check_piano_keyboard_masking(channels))
     findings.extend(check_kick_bass_conflict(channels))
-    findings.extend(check_stereo_pair_consistency(channels, (17, 18), "Piano L/R"))
-    findings.extend(check_stereo_pair_consistency(channels, (29, 30), "KB L/R"))
+
+    # Dynamic stereo pair detection: check all stereo-linked odd channels
+    for ch_key, ch_data in channels.items():
+        ch_num = int(ch_key.replace("ch", ""))
+        if ch_num % 2 == 1 and ch_data.get("stereo_linked"):
+            pair_key = f"ch{ch_num + 1:02d}"
+            if pair_key in channels and channels[pair_key].get("stereo_linked"):
+                pair_label = f"{ch_data.get('name', ch_key)} L/R"
+                findings.extend(check_stereo_pair_consistency(
+                    channels, (ch_num, ch_num + 1), pair_label
+                ))
 
     # --- Main bus ---
     findings.extend(check_main_bus(session.get("main", {})))
+
+    # --- Livestream / matrix ---
+    findings.extend(check_livestream_routing(session))
+    findings.extend(check_matrix_eq(session))
+    findings.extend(check_matrix_faders(session))
+    findings.extend(check_matrix_compressor(session))
+
+    # --- DCA coverage ---
+    findings.extend(check_dca_coverage(session))
 
     # --- Session-level ---
     findings.extend(check_muted_channels_with_eq(channels))

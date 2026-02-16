@@ -8,7 +8,9 @@ Connect to the mixer. Verify Claude can control every parameter type. Fix captur
 cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
 ```
 
-Read `docs/TECHNICAL.md` and `scripts/common.py` before starting. You'll need them for OSC addresses and value conversions.
+Read `docs/TECHNICAL.md`, `scripts/common.py`, and `docs/CHANNELS.md` before starting. You'll need them for OSC addresses, value conversions, and routing context.
+
+**You have full authority to modify**: `session_capture.py`, `control.py`, `common.py`, `analyze.py`, and `docs/TECHNICAL.md`. Fix bugs, add missing features, update docs — don't ask permission for code changes.
 
 ## Part 1: Parameter Control Verification
 
@@ -64,8 +66,9 @@ Use `control.py` (raw OSC mode is fine: `control.py /ch/01/dyn/thr 0.61`).
 ### FX Parameters (test on FX1)
 - [ ] FX parameter (`/fx/1/par/02`)
 
-### Matrix (test on matrix that feeds livestream)
-- [ ] Matrix fader (`/mtx/01/mix/fader` — find the correct matrix first)
+### Matrix (test on livestream matrices)
+Find Cam L / Cam R matrices — check `docs/CHANNELS.md` or query mixer for matrix names. Test on whichever matrix feeds the livestream.
+- [ ] Matrix fader (`/mtx/01/mix/fader` — adjust index for correct matrix)
 - [ ] Matrix EQ band gain
 - [ ] Matrix compressor threshold (if available)
 
@@ -73,27 +76,16 @@ Use `control.py` (raw OSC mode is fine: `control.py /ch/01/dyn/thr 0.61`).
 - [ ] Send level (`/ch/01/mix/15/level`)
 - [ ] Send on/off (`/ch/01/mix/15/on`)
 
-## Part 2: Capture Gap Fixes
+## Part 2: Capture Gap Fixes (Status)
 
-The session capture (`session_capture.py`) is missing critical data. Extend it to capture:
+All capture gaps from the original list have been implemented. Verify correctness if issues arise:
 
-### Matrix Data (Cam L / Cam R)
-The livestream runs through matrices. Capture:
-- Matrix faders, EQ, compressor
-- Matrix input sources (which buses/main feed the matrix, at what levels)
-- Figure out the OSC addresses — likely `/mtx/01/...` pattern
+- **Matrix data** — DONE. `session_capture.py` `capture_matrix_settings()`. Faders, EQ, compressor, input sources.
+- **Signal path routing** — DONE. Channel → main routing (`/ch/XX/mix/st`), bus → main (`/bus/XX/mix/st`), bus → matrix sends. See `build_signal_paths()`.
+- **DCA assignments** — DONE. Bitmask capture via `/ch/XX/grp/dca`. See `docs/TECHNICAL.md` DCA Membership section.
+- **analyze.py integration** — DONE. Matrix fader/compressor checks, DCA-aware gain staging, livestream routing analysis.
 
-### Complete Signal Path Routing
-Currently captured: channel → bus sends. NOT captured:
-- **Channel main/subgroup routing** — whether a channel routes to main LR or to a bus pair as a subgroup. This is why the subgroup buses (Vocal, Drums, Acoustic, Electronic) show -inf sends — channels route to them as subgroups, not via sends.
-- **Bus → main routing** — whether each bus feeds main LR
-- **Bus → matrix routing** — how buses feed the livestream matrices
-
-The subgroup buses (Vocal bus09, Acoustic bus10, Drums bus12, Electronic bus13) route ONLY to the livestream, NOT to mains. This routing must be captured so Claude can trace the full path.
-
-### DCA Assignments
-Capture which channels belong to each DCA group. Claude needs this for level math — a DCA trim affects every channel in the group.
-- OSC addresses likely at `/dca/1/...` or similar — investigate
+See `docs/TECHNICAL.md` changelog (Feb 15, 2026) for details.
 
 ## Debugging Rules
 

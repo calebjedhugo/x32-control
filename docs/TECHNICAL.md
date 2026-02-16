@@ -15,7 +15,10 @@ The `behringer_mixer` library has limitations:
 
 - Zero-padded channels required: `/ch/08/`, not `/ch/8/`
 - First query after connection often returns None; `reliable_query()` handles this with retries
-- FX parameters have internal scaling (e.g., 0.65 → 0.646)
+- FX parameters have internal scaling (e.g., 0.65 → 0.646). Need nudge >= 0.05 to register
+- Bus/matrix parameters respond slower than channels; use 8+ retries with 0.25s delay
+- Matrix faders: direct `query()` is unreliable for readback after send; use `state()` instead (`/mtx/N/mix_fader`)
+- Send levels (`/ch/XX/mix/YY/level`): initial query works but readback after send is unreliable
 
 ## Value Conversions
 
@@ -25,7 +28,18 @@ X32 returns index into array, not actual ratio:
 Index: 0    1    2   3   4   5  6  7  8   9  10   11
 Ratio: 1.1  1.3  1.5  2  2.5  3  4  5  7  10  20  100
 ```
-Use `ratio_index_to_value()` in common.py.
+Use `ratio_index_to_value()` / `ratio_value_to_index()` in common.py.
+
+### Compressor Knee
+Stepped parameter, index 0-5. Sending intermediate floats gets snapped:
+```
+Index: 0    1    2    3    4    5
+Float: 0.0  0.2  0.4  0.6  0.8  1.0
+```
+Send integer 0-5 or exact float values. **Verified 2026-02-15**.
+
+### Compressor Mix / Makeup Gain
+Quantized — nudge of 0.01 is too small. Use 0.05+ for mix, 0.1+ for mgain.
 
 ### HPF Frequency
 - Address: `/ch/XX/preamp/hpf` (frequency), `/ch/XX/preamp/hpon` (on/off)
@@ -47,6 +61,68 @@ sel: 0  1  2  3  4  5  6  7
 FX:  1  1  2  2  3  3  4  4
 ```
 - Formula: `fx_slot = (insert_sel // 2) + 1`
+
+## Routing OSC Addresses
+
+**Verified 2026-02-15**. These addresses control signal routing.
+
+### Channel → Main LR
+- `/ch/XX/mix/st` — 1=routes to main LR, 0=does not
+- Subgroup channels (drums, some vocals) set st=0 and route only via bus sends
+
+### Bus → Main LR
+- `/bus/XX/mix/st` — 1=bus feeds main LR, 0=does not
+- Subgroup buses (09 Vocal, 10 Acoustic, 12 Drums, 13 Electronic) all have st=0
+
+### Bus → Matrix Sends
+- `/bus/XX/mix/YY/level` — send level from bus XX to matrix YY (1-6)
+- `/bus/XX/mix/YY/on` — send on/off
+
+### Main → Matrix Sends
+- `/main/st/mix/YY/level` — send level from main to matrix YY
+- `/main/st/mix/YY/on` — send on/off
+
+### Matrix Outputs (1-6)
+- `/mtx/XX/mix/fader` — matrix output fader
+- `/mtx/XX/eq/N/f|g|q` — 6-band EQ (same as buses)
+- `/mtx/XX/dyn/on|thr` — compressor
+- `/mtx/XX/insert/on|sel` — insert routing
+- `/mtx/XX/config/name` — matrix name
+
+### Current Matrix Map
+```
+mtx01: Mono House (fed from main)
+mtx02: Foyer
+mtx03: Cam L (livestream left)
+mtx04: Cam R (livestream right)
+mtx05: Assisted Listening
+mtx06: Computer
+```
+
+## DCA Groups
+
+### Reading DCA Settings
+- `/dca/N/config/name` — DCA name (query works)
+- `/dca/N/mix_fader` — DCA fader (read via `state()`, NOT `query()`)
+- `/dca/N/mix_on` — DCA mute (read via `state()`)
+
+### DCA Membership (Bitmask)
+- `/ch/XX/grp/dca` — bitmask of DCA assignments for channel XX
+- `/bus/XX/grp/dca` — bitmask of DCA assignments for bus XX
+- Bit 0 = DCA1, Bit 1 = DCA2, ..., Bit 7 = DCA8
+- Example: value 4 = binary 100 = DCA3 only
+- Example: value 5 = binary 101 = DCA1 + DCA3
+
+### Current DCA Assignments (as of 2026-02-15)
+```
+DCA1 (Vox):      ch01-06 (singing vocals)
+DCA2 (Speaking):  ch09, ch10, ch13, ch14
+DCA3 (Inst):      ch08, ch17-22, ch28-32, bus07-08
+DCA4 (Aux):       ch11, ch15, ch16
+DCA5 (Monitors):  bus01-06
+```
+Note: ch07 (Kat), ch23-27 (drums except floor tom) have no DCA assignment.
+ch08 (pastor) is in DCA3 (Inst) instead of DCA2 (Speaking) — possible misconfiguration.
 
 ## Meter Blob Structure
 
@@ -183,5 +259,6 @@ python scripts/query.py --fx 1
 
 ## Changelog
 
+- **Feb 15, 2026**: Full parameter verification (29/32 pass). Added matrix capture, channel/bus routing, DCA groups, bus→matrix sends, main→matrix sends. New control.py args: --mute/--unmute, --pan, --comp-ratio, --comp-mix, --comp-mgain, --gate-range. New analyze.py checks: livestream routing, DCA coverage, matrix EQ. Documented comp knee (stepped 0-5), matrix/DCA OSC addresses.
 - **Jan 25, 2026**: Fixed pan capture, stereo link detection, insert_sel mapping, added Dual Exciter params
 - **Jan 18, 2026**: Fixed EQ/dynamics/FX read/write, meter blob parsing, compressor ratio display, HPF queries

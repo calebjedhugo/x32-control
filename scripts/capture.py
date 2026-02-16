@@ -81,11 +81,12 @@ def parse_meter_blob(data: bytes, meter_type: int) -> Dict[str, Any]:
     Meter data comes as a blob of int16 values (big-endian).
 
     X32 meter blob structure for /meters/0 and /meters/1 (channels):
-    - Index 0: Header byte (constant ~17920)
-    - Index 1-16: Channels 1-16
-    - Index 17: Header byte (constant ~28603)
-    - Index 18-33: Channels 17-32
-    - Index 34+: Aux inputs and other meters
+    - Index 0: Header (constant ~17920)
+    - Index 1: Header (constant 0)
+    - Index 2-17: Channels 1-16
+    - Index 18: Header (constant ~28603)
+    - Index 19-34: Channels 17-32
+    - Index 35+: Aux inputs and other meters
     """
     result = {}
 

@@ -23,7 +23,7 @@
 - `docs/VENUE.md` - Room acoustics, PA, known issues
 - `docs/CHANNELS.md` - Detailed channel info, personnel, stage layout
 - `docs/TECHNICAL.md` - Developer/debug notes (OSC addresses, library workarounds)
-- `notes/2026-01-21-session.md` - Latest session notes (bugs found, EQ changes, channel assignments)
+- `notes/2026-01-21-session.md` - Jan 21 session notes (bugs found, EQ changes, channel assignments)
 
 ## People
 *Channel assignments vary - check most recent capture*
@@ -31,11 +31,12 @@
 | Person | Role |
 |--------|------|
 | Tammy | Lead vocalist, guitar |
+| Randy | Vocals |
 | John | Vocals, sometimes electric guitar |
 | Sara | Vocals |
 | Bart | Vocals |
 | Kat | Vocals |
-| Jen | Flute, sometimes vocals |
+| Jen | Vocals and flute |
 | Zach | Electric guitar |
 
 ## FX Routing
@@ -46,7 +47,7 @@
 | FX 7 | Amp Sim | Electric guitar (ch32) |
 | FX 8 | Exciter | Background vocals |
 
-**Exciter Timbre**: -48 to +48 scale (0 = neutral)
+**Exciter Timbre**: -50 to +50 scale (0 = neutral)
 - Tammy: +10 to +15 (brighter to cut through)
 - Background vocals: 0 to +5 (warm, blends)
 
@@ -58,7 +59,7 @@ Run `/x32-capture` when the user says "let's get started" or similar. This:
 2. **Analyzes** the capture automatically (EQ issues, HPF, masking, gain staging, room rules)
 3. **Presents findings** in plain English with available fixes
 
-Output is saved to `captures/session_YYYY-MM-DD_HH-MM-SS.json`.
+Output is saved to `captures/session_YYYY-MM-DD_HHMMSS.json`.
 
 ### 2. Applying Fixes
 Findings from analyze.py include a `fix` field with ready-to-run `control.py` commands:
@@ -70,14 +71,14 @@ Findings from analyze.py include a `fix` field with ready-to-run `control.py` co
 ### 3. Answering Questions
 **Use the session capture data.** Don't re-query the mixer unless you need fresh real-time info.
 
-- "What's Tammy's EQ?" → Look up ch01 in session capture
-- "Where does the kick go?" → Check ch26 routing/sends in session capture
+- "What's Tammy's EQ?" → Find Tammy's channel by name in session capture
+- "Where does the kick go?" → Find kick channel by label, check routing/sends
 - "What's on FX4?" → Look up fx4 in session capture
 
 ### 4. RTA (Frequency Analysis)
-When user asks about frequencies ("what's the kick hitting?"), run RTA:
+When user asks about frequencies ("what's the kick hitting?"), find the channel by label in the session capture, then run RTA:
 ```bash
-python scripts/rta_listen.py --channel 26 --update-session
+python scripts/rta_listen.py --channel <N> --update-session
 ```
 
 **ALWAYS use `--update-session`** - this splices RTA results back into the session capture so you don't have to re-listen later.
@@ -91,13 +92,13 @@ python scripts/rta_listen.py --channel 26 --update-session
 | User says | You do |
 |-----------|--------|
 | "let's get started" | Run `/x32-capture` (captures + analyzes + suggests fixes) |
-| "check Ryan's signal path" | Look up in session capture |
-| "what frequencies is the kick hitting?" | Run rta_listen.py --channel 26 --update-session |
-| "turn up the kick" | Raise fader ch26 |
-| "Tammy's too loud" | Lower fader ch1 |
-| "snare needs more snap" | Boost EQ 2-5kHz on ch25 |
-| "bass is muddy" | Cut EQ 200-400Hz on ch31 |
-| "piano is boxy" | Cut EQ 300-500Hz on ch17-18 |
+| "check Jen's signal path" | Look up by name in session capture |
+| "what frequencies is the kick hitting?" | Find kick channel by label, run rta_listen.py |
+| "turn up the kick" | Find kick channel by label, raise fader |
+| "Tammy's too loud" | Find Tammy's channel by label, lower fader |
+| "snare needs more snap" | Find snare by label, boost EQ 2-5kHz |
+| "bass is muddy" | Find bass by label, cut EQ 200-400Hz |
+| "piano is boxy" | Find piano channels by label, cut EQ 300-500Hz |
 
 ## Quick Commands
 
@@ -116,19 +117,17 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 **IMPORTANT: ALWAYS use `--update-session` with rta_listen.py.** Full syntax in `docs/COMMANDS.md`.
 
-## Room Issues
-- Low-mid buildup (200-400Hz) from corner loading
-- Overpowered sub
-- Master bus has LF shelf cut for house
+## Room & Mix Strategy
 
-## Current Mix Approach (Jan 2026)
+See `docs/VENUE.md` for room acoustics, known problems, and mixing rules.
+
+**Key rule: NEVER boost 200-400Hz for FOH** — room has severe low-mid buildup.
 
 **Frequency lanes** to reduce fighting:
-- Piano: warm mids, presence (2-4kHz)
-- Keyboard: sparkle (5kHz+), cut mids
+- Piano: warm mids (400Hz-2kHz), presence (2-4kHz)
+- Keyboard: sparkle (3kHz+), cut mids
 - Electric guitar: low-end warmth via amp sim, cut mids
-
-**Vocals**: gentle presence boosts only - aggressive boosts stack when everyone sings.
+- Vocals: gentle presence boosts only — aggressive boosts stack when everyone sings
 
 ---
 *See docs/*.md for detailed reference*

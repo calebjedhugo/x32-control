@@ -27,7 +27,7 @@ Read this when you need detailed info about specific channels, personnel, or sta
 | 17-18 | Piano low/high | 6ft grand | Stereo condensers, low/high string split |
 | 19 | Tammy Guitar | Acoustic | |
 | 20 | Front Guitar | Acoustic | Not always used |
-| 21 | Flute-Jen | Flute | Jennifer, +18dB preamp |
+| 21 | Flute-Jen | Flute | Jennifer, +18dB preamp. Shares channel with violin (rotates weekly) |
 | 22 | Floor Tom | Drums | 18" |
 | 23 | Mid Tom | Drums | 14" rack |
 | 24 | Mid High Tom | Drums | 12" rack |
@@ -50,6 +50,17 @@ Read this when you need detailed info about specific channels, personnel, or sta
 | 4 | Aux | Auxiliary inputs |
 | 5 | Monitors | Monitor sends |
 
+### Subgroup Buses (Expected Routing)
+| Bus | Name | Expected Source Types |
+|-----|------|---------------------|
+| 09 | Vocal | vocal, speaking |
+| 10 | Acoustic | piano, acoustic_guitar, flute, violin |
+| 12 | Drums | kick, snare, rack_tom, floor_tom, overhead |
+| 11 | (unused) | |
+| 13 | Electronic | keys, electric_guitar, bass |
+
+These route to the livestream matrices (Cam L / Cam R) only, not to mains. All four subgroup buses should feed both livestream matrices.
+
 ### Effects
 - **Drum Bus**: Routed to Ultimo compressor plugin
 - **Vocal Bus**: Routed to stereo exciter
@@ -59,7 +70,7 @@ Read this when you need detailed info about specific channels, personnel, or sta
 
 ## Mic Details
 - **Tammy (ch1)**: Sennheiser e945
-- **Randy (ch2), John (ch3), Ryan (ch4), Sara (ch5)**: CPG XD2
+- **Randy (ch2), John (ch3), Jen (ch4), Sara (ch5)**: CPG XD2
 - **Bart (ch6), Kat (ch7)**: Shure SM58
 - **Piano (17-18)**: AKG C02 pencil condensers
 - **Drums**: NADY kit (budget, but captures transients)
@@ -72,9 +83,10 @@ Generally quiet singers with low-output mics = high preamp gains needed.
 
 | Voice Type | People | HPF Safe Range |
 |------------|--------|----------------|
-| Alto | Tammy, Sara, Kat, Jill, Jen | 120-150Hz |
+| Alto | Tammy, Sara, Kat, Jen | 120-150Hz |
+| Alto (substitute) | Jill (occasional, rotates onto available channel) | 120-150Hz |
 | Baritone | Bart, John | 80-100Hz |
-| Tenor | Randy, Ryan | 100-120Hz |
+| Tenor | Randy | 100-120Hz |
 
 ### Drummers
 Classically trained, masterful restraint. No cage needed. Gentle playing style requires close mics to capture transients.
@@ -90,7 +102,7 @@ Tammy          Singers/       Drums    Bass/Electric    Flute/    Kat
 ### Bleed Considerations
 - Tammy's vocal mic likely picks up piano
 - Singers behind piano may pick up piano in their mics
-- Flute/violin on C02 condenser (sensitive)
+- Flute/violin on C02 condenser (sensitive, shares channel when both aren't present)
 
 ## Known Problem Areas
 - **Low G on bass** (~49Hz or 98Hz) hits room resonance hard
