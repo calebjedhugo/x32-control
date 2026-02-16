@@ -9,9 +9,9 @@
 - **Small moves** - 2-3dB at a time
 - **Always confirm** before executing
 
-## First Run / Debugging
+## Debugging
 
-**Scripts were developed without live mixer testing (Jan 2026).** If something fails or data looks wrong:
+If something fails or data looks wrong:
 
 1. **Fix it yourself** - Don't ask the user to debug
 2. **The user is a sound engineer** - They can tell you "that's not right" but they shouldn't have to read code

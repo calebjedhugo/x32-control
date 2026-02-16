@@ -151,6 +151,9 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
     settings["gate"] = {
         "on": await reliable_query(mixer, f'{ch_addr}/gate/on', default=0) == 1,
         "threshold": round(await reliable_query(mixer, f'{ch_addr}/gate/thr', default=0.5), 3),
+        "range": round(await reliable_query(mixer, f'{ch_addr}/gate/range', default=0.5), 3),
+        "attack": round(await reliable_query(mixer, f'{ch_addr}/gate/attack', default=0.5), 3),
+        "release": round(await reliable_query(mixer, f'{ch_addr}/gate/release', default=0.5), 3),
     }
 
     # Compressor
@@ -161,6 +164,8 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
         "ratio": f"{ratio_index_to_value(int(comp_ratio_idx))}:1" if comp_ratio_idx is not None else "3:1",
         "attack": round(await reliable_query(mixer, f'{ch_addr}/dyn/attack', default=0.5), 3),
         "release": round(await reliable_query(mixer, f'{ch_addr}/dyn/release', default=0.5), 3),
+        "mix": round(await reliable_query(mixer, f'{ch_addr}/dyn/mix', default=1.0), 3),
+        "mgain": round(await reliable_query(mixer, f'{ch_addr}/dyn/mgain', default=0.0), 3),
     }
 
     # Insert
@@ -243,6 +248,10 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
         "on": await reliable_query(mixer, f'{bus_addr}/dyn/on', default=0) == 1,
         "threshold": round(await reliable_query(mixer, f'{bus_addr}/dyn/thr', default=0.5), 3),
         "ratio": f"{ratio_index_to_value(int(comp_ratio_idx))}:1" if comp_ratio_idx is not None else "3:1",
+        "attack": round(await reliable_query(mixer, f'{bus_addr}/dyn/attack', default=0.5), 3),
+        "release": round(await reliable_query(mixer, f'{bus_addr}/dyn/release', default=0.5), 3),
+        "mix": round(await reliable_query(mixer, f'{bus_addr}/dyn/mix', default=1.0), 3),
+        "mgain": round(await reliable_query(mixer, f'{bus_addr}/dyn/mgain', default=0.0), 3),
     }
 
     # Bus insert - sel maps: 0-1=FX1, 2-3=FX2, 4-5=FX3, 6-7=FX4 (L/R pairs)
@@ -329,9 +338,15 @@ async def capture_main_settings(mixer) -> Dict:
     settings["eq"] = {"on": eq_on, "bands": eq_bands}
 
     # Main compressor
+    main_comp_ratio_idx = await reliable_query(mixer, '/main/st/dyn/ratio', default=5)
     settings["compressor"] = {
         "on": await reliable_query(mixer, '/main/st/dyn/on', default=0) == 1,
         "threshold": round(await reliable_query(mixer, '/main/st/dyn/thr', default=0.5), 3),
+        "ratio": f"{ratio_index_to_value(int(main_comp_ratio_idx))}:1" if main_comp_ratio_idx is not None else "3:1",
+        "attack": round(await reliable_query(mixer, '/main/st/dyn/attack', default=0.5), 3),
+        "release": round(await reliable_query(mixer, '/main/st/dyn/release', default=0.5), 3),
+        "mix": round(await reliable_query(mixer, '/main/st/dyn/mix', default=1.0), 3),
+        "mgain": round(await reliable_query(mixer, '/main/st/dyn/mgain', default=0.0), 3),
     }
 
     # Matrix sends from main (6 matrices)
@@ -379,9 +394,15 @@ async def capture_matrix_settings(mixer, mtx_num: int) -> Dict:
     settings["eq"] = {"on": eq_on, "bands": eq_bands}
 
     # Matrix compressor
+    mtx_comp_ratio_idx = await reliable_query(mixer, f'{mtx_addr}/dyn/ratio', default=5)
     settings["compressor"] = {
         "on": await reliable_query(mixer, f'{mtx_addr}/dyn/on', default=0) == 1,
         "threshold": round(await reliable_query(mixer, f'{mtx_addr}/dyn/thr', default=0.5), 3),
+        "ratio": f"{ratio_index_to_value(int(mtx_comp_ratio_idx))}:1" if mtx_comp_ratio_idx is not None else "3:1",
+        "attack": round(await reliable_query(mixer, f'{mtx_addr}/dyn/attack', default=0.5), 3),
+        "release": round(await reliable_query(mixer, f'{mtx_addr}/dyn/release', default=0.5), 3),
+        "mix": round(await reliable_query(mixer, f'{mtx_addr}/dyn/mix', default=1.0), 3),
+        "mgain": round(await reliable_query(mixer, f'{mtx_addr}/dyn/mgain', default=0.0), 3),
     }
 
     # Matrix insert
@@ -391,6 +412,55 @@ async def capture_matrix_settings(mixer, mtx_num: int) -> Dict:
         "on": insert_on,
         "fx_slot": (int(insert_sel) // 2) + 1 if insert_on and insert_sel is not None else None,
     }
+
+    return settings
+
+
+async def capture_fxrtn_settings(mixer, fxrtn_num: int) -> Dict:
+    """Capture settings for an FX return."""
+    fxrtn_addr = f"/fxrtn/{fxrtn_num:02d}"
+    state = mixer.state()
+
+    fader = state.get(f'/fxrtn/{fxrtn_num}/mix_fader', 0.0)
+    on = state.get(f'/fxrtn/{fxrtn_num}/mix_on', True)
+
+    settings = {
+        "name": await reliable_query(mixer, f'{fxrtn_addr}/config/name', default="") or "",
+        "fader": round(float(fader), 3) if fader else 0.0,
+        "fader_db": format_db(float(fader)) if fader else "-inf dB",
+        "mute": on == False if on is not None else False,
+    }
+
+    # EQ (4 bands)
+    eq_on = await reliable_query(mixer, f'{fxrtn_addr}/eq/on', default=0) == 1
+    eq_bands = []
+    for band in range(1, 5):
+        eq_bands.append({
+            "band": band,
+            "freq": round(await reliable_query(mixer, f'{fxrtn_addr}/eq/{band}/f', default=0.5), 3),
+            "gain": round(await reliable_query(mixer, f'{fxrtn_addr}/eq/{band}/g', default=0.5), 3),
+            "q": round(await reliable_query(mixer, f'{fxrtn_addr}/eq/{band}/q', default=0.5), 3),
+        })
+    settings["eq"] = {"on": eq_on, "bands": eq_bands}
+
+    # Routing: main LR send
+    st = await reliable_query(mixer, f'{fxrtn_addr}/mix/st', default=0)
+    settings["routing"] = {
+        "main_lr": int(st) == 1 if st is not None else True,
+    }
+
+    # Bus sends
+    sends = {}
+    for bus_num in range(1, 17):
+        level = await reliable_query(mixer, f'{fxrtn_addr}/mix/{bus_num:02d}/level', default=0.0)
+        bus_on = await reliable_query(mixer, f'{fxrtn_addr}/mix/{bus_num:02d}/on', default=0) == 1
+        if bus_on or (level and level > 0.01):
+            sends[f"bus{bus_num:02d}"] = {
+                "level": round(level, 3) if level else 0.0,
+                "level_db": format_db(level) if level else "-inf dB",
+                "on": bus_on,
+            }
+    settings["sends"] = sends
 
     return settings
 
@@ -686,6 +756,7 @@ Example:
             "matrices": {},
             "dcas": {},
             "fx": {},
+            "fxrtns": {},
             "main": {},
             "analysis": {},
         }
@@ -719,6 +790,12 @@ Example:
         for fx_num in range(1, 9):
             result["fx"][f"fx{fx_num}"] = await capture_fx_settings(mixer, fx_num)
         print("  FX 1-8 done", file=sys.stderr)
+
+        # Capture FX returns
+        print("Capturing FX return settings...", file=sys.stderr)
+        for fxrtn_num in range(1, 9):
+            result["fxrtns"][f"fxrtn{fxrtn_num:02d}"] = await capture_fxrtn_settings(mixer, fxrtn_num)
+        print("  FX returns 1-8 done", file=sys.stderr)
 
         # Capture main bus
         print("Capturing main bus settings...", file=sys.stderr)

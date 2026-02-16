@@ -65,7 +65,7 @@ Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRE
 
 **Include:**
 - Current capture file path
-- Doc file paths: CHANNELS.md, VENUE.md, CORRECTIONS.md
+- Doc file paths: CHANNELS.md, VENUE.md, CORRECTIONS.md, TECHNICAL.md
 - Mode: `full` or `focused:<target>`
 - User preferences from this session
 - Factual changelog: "Changes applied so far: kick fader +2dB, snare gate threshold lowered, vocal bus EQ cut at 300Hz..." etc.
@@ -77,6 +77,17 @@ Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRE
 - Your own analysis of what's working or not
 
 **IMPORTANT: The editor must assess the mix fresh from the current state.**
+
+**Template:**
+```
+## Context Brief — Pass N
+
+**Capture**: captures/session_YYYY-MM-DD_HHMMSS.json
+**Docs**: docs/CHANNELS.md, docs/VENUE.md, docs/CORRECTIONS.md, docs/TECHNICAL.md (value conversions)
+**Mode**: full | focused:<target> (channels: N-M)
+**User preferences**: [list or "none yet"]
+**Changelog**: [factual list of changes applied so far, or "first pass"]
+```
 
 ### Spawning an Editor
 
@@ -124,6 +135,28 @@ Read the capture file and all doc files from your context brief.
 - **Respect existing room corrections.** Main bus LF shelf cuts and HF presence cut stay.
 - **NEVER apply preamp changes while RTA is running on that channel.**
 
+### Raw OSC Reference
+
+Most parameters work with named `control.py` flags. These require raw OSC positional args:
+
+| Parameter | Command |
+|-----------|---------|
+| HPF on/off | `python scripts/control.py /ch/05/preamp/hpon 1` |
+| HPF frequency | `python scripts/control.py /ch/05/preamp/hpf 0.5` (0.0-1.0, log 20-400Hz) |
+| Comp attack | `python scripts/control.py /ch/05/dyn/attack 0.5` (0.0-1.0) |
+| Comp release | `python scripts/control.py /ch/05/dyn/release 0.5` (0.0-1.0) |
+| Comp knee | `python scripts/control.py /ch/05/dyn/knee 3` (int 0-5) |
+| Gate attack | `python scripts/control.py /ch/05/gate/attack 0.5` (0.0-1.0) |
+| Gate release | `python scripts/control.py /ch/05/gate/release 0.5` (0.0-1.0) |
+| Matrix fader | `python scripts/control.py /mtx/03/mix/fader 0.75` |
+| Matrix EQ | `python scripts/control.py /mtx/03/eq/1/g 0.45` |
+| Matrix comp | `python scripts/control.py /mtx/03/dyn/thr 0.6` |
+| DCA fader | `python scripts/control.py /dca/1/fader 0.75` |
+| Bus-to-matrix send | `python scripts/control.py /bus/09/mix/01/level 0.5` |
+| FX return fader | `python scripts/control.py --fxrtn 1 --fader -10dB` (this one has a named flag) |
+
+Replace `/ch/05` or `/mtx/03` etc. with the actual target address. Buses use `/bus/XX`, main uses `/main/st`.
+
 ### Phase 1: Assess
 
 1. Read the capture JSON. Identify **active channels**: unmuted AND fader > 0.01 AND meter activity.
@@ -146,7 +179,7 @@ Spawn subagents as Task agents (subagent_type: `general-purpose`). Each gets the
 - If target is `livestream`: EQ agent only (bus/matrix scope, no channel changes)
 
 **While subagents work**, handle (full mix mode only, or if target channels are affected):
-- **Routing check** — Verify signal path per CHANNELS.md. Each channel's subgroup bus matches its source type. All four subgroup buses feed both livestream matrices. If misrouted, **note it in summary** but don't change routing.
+- **Routing check** — Verify signal path per CHANNELS.md. Each channel's subgroup bus matches its source type. Subgroup buses (09 Vocal, 10 Acoustic, 12 Drums, 13 Electronic) feed livestream matrices only — they do NOT route to main LR (`/bus/XX/mix/st` = 0). All four should feed both Cam L (mtx03) and Cam R (mtx04). If misrouted, **note it in summary** but don't change routing.
 - **Pan** — Match stage layout per CHANNELS.md. Stereo pairs balanced L/R. Piano low/high is NOT a stereo pair.
 - **Reverb sends** — Balance per channel type. Lead vocal > piano > drums.
 
@@ -155,7 +188,7 @@ Spawn subagents as Task agents (subagent_type: `general-purpose`). Each gets the
 1. Collect all subagent suggestions
 2. Deconflict:
    - Stacked EQ boosts across channels (e.g., both piano and vocals boosted at 3kHz)
-   - Preamp changes on channels where RTA was running
+   - Preamp vs RTA timing: if the EQ agent ran RTA on a channel, confirm `rta_listen.py` has exited before applying preamp changes from metering agents on that channel
    - Contradictory suggestions across agent groups
 3. Apply deconflicted changes via `control.py`
 4. **Log every change**: parameter, old value, new value
@@ -191,13 +224,13 @@ The engineer can't hear the livestream from the room — optimize by the numbers
 - Channels → subgroup buses (Vocal, Drums, Acoustic, Electronic) → matrices
 - Channels → main LR → matrices
 - Ambient mics → matrices
-- Reverb return (CamVerb bus16) → matrices
+- Reverb return (CamVerb — verify bus number from capture) → matrices
 
 **Balance for two audiences** — phone speakers AND home theaters:
 - Vocal intelligibility first
 - Low end via upper harmonics (80-200Hz) — phones can't do sub-bass
 - Less reverb than FOH
-- Calculate group fader levels from signal data (math, not guesswork)
+- Calculate bus-to-matrix send levels from capture data: read each bus's meter level and its current send level to Cam L/R. Target vocal bus 3-6dB above instrument buses at the matrix input for intelligibility. Adjust send levels, not bus faders (bus faders affect all downstream sends from that bus, not just livestream matrices).
 
 **Matrix compressor** — tighter than FOH. Broadcast needs consistent levels.
 
@@ -230,7 +263,7 @@ You NEVER touch the mixer. You analyze data and return suggestions only.
 
 **Context you receive:** session capture JSON, relevant docs, and your scope from the editor.
 
-**DCA awareness**: A channel fader at unity with its DCA at -10dB is effectively -10dB. Always account for DCA levels.
+**DCA awareness**: A channel fader at unity with its DCA at -10dB is effectively -10dB. Always account for DCA levels. **Note: some channels have no DCA assignment** (check `/ch/XX/grp/dca` bitmask = 0). Channels without a DCA are controlled by their fader alone.
 
 **Return format**: For each channel — number, label, parameter, current value, suggested value, reasoning. If a channel looks good, say so. Don't suggest changes for the sake of it.
 
@@ -256,7 +289,7 @@ For each active vocal channel:
 - Rack toms: comp 3:1-7:1, full gate
 - Snare: comp 3:1-7:1, full gate
 - Kick: comp 3:1-7:1, full gate
-- Overheads: comp 2:1-5:1, NO gate
+- Overheads (spaced pair — L near hi-hats, R near ride): comp 2:1-5:1, NO gate
 
 For each active drum channel:
 1. **Preamp/gain staging** — Compare peak to other drums. Fader near unity (accounting for DCA).
@@ -294,6 +327,7 @@ You are the frequency-domain specialist. You handle everything timbral.
 
 **1. FX tone analysis** (first — informs all EQ decisions):
 - Exciters: lead vocal brighter (+10 to +15), BGVs warmer (0 to +5)
+  - Timbre is `/fx/N/par/08` (Dual) or `/fx/N/par/04` (Stereo). OSC 0.0-1.0 maps to -50 to +50. Formula: `osc_value = (timbre + 50) / 100`. So +10 = 0.6, +15 = 0.65, 0 = 0.5, +5 = 0.55.
 - Amp sim: complement guitar's frequency lane
 - Note findings — they affect EQ suggestions downstream
 
@@ -301,6 +335,7 @@ You are the frequency-domain specialist. You handle everything timbral.
 - On for everything except bass and kick
 - Alto vocals: 120-150Hz. Baritone: 80-100Hz. Tenor: 100-120Hz.
 - Piano: 25-80Hz. Acoustic guitar: 60-150Hz. Flute: 150-300Hz.
+- HPF values in capture are already in Hz. For suggestions, provide both Hz and raw value. Raw OSC: `/ch/XX/preamp/hpon` (1=on), `/ch/XX/preamp/hpf` (0.0-1.0, log scale 20-400Hz). Use `hpf_value_to_hz()` from common.py if you need to convert.
 
 **3. Channel EQ** (RTA-informed, priority order):
 ```bash

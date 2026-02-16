@@ -346,9 +346,10 @@ async def main():
         if not any([
             args.fader,
             args.eq_band, args.eq_on, args.eq_off,
-            args.comp_threshold, args.mute, args.unmute
+            args.comp_threshold, args.comp_ratio, args.comp_mix, args.comp_mgain,
+            args.mute, args.unmute
         ]):
-            parser.error("--main requires --eq-band, --eq-on/off, --comp-threshold, --mute/--unmute, or --fader")
+            parser.error("--main requires --eq-band, --eq-on/off, --comp-threshold, --comp-ratio, --comp-mix, --comp-mgain, --mute/--unmute, or --fader")
     elif args.fx:
         # FX slot mode
         if not (args.fx_param and args.fx_value is not None):
@@ -488,9 +489,16 @@ async def main():
             elif args.unmute:
                 await set_value(mixer, f"{main_addr}/mix/on", 1, args.dry_run)
 
-            # Dynamics (compressor only on main)
+            # Dynamics (compressor on main)
             if args.comp_threshold is not None:
                 await set_value(mixer, f"{main_addr}/dyn/thr", args.comp_threshold, args.dry_run)
+            if args.comp_ratio is not None:
+                ratio_idx = ratio_value_to_index(args.comp_ratio)
+                await set_value(mixer, f"{main_addr}/dyn/ratio", ratio_idx, args.dry_run)
+            if args.comp_mix is not None:
+                await set_value(mixer, f"{main_addr}/dyn/mix", args.comp_mix, args.dry_run)
+            if args.comp_mgain is not None:
+                await set_value(mixer, f"{main_addr}/dyn/mgain", args.comp_mgain, args.dry_run)
 
         # FX slot parameter
         if args.fx and args.fx_param and args.fx_value is not None:
