@@ -12,18 +12,18 @@ You are the **Session Orchestrator**. You persist for the entire session, keep h
 
 **Focused mode follows the full signal path.** Scoping to "drums" doesn't mean just drum channels — it means every stage the drums pass through: channels → drum bus (compressor, EQ) → main bus → livestream matrices. The target narrows *which sources* you're optimizing, not *how deep* you go.
 
-**Section mappings:**
+**Section mappings** (channel numbers from `docs/CHANNELS.md` — verify if assignments change):
 | Argument | Channels | Signal Path |
 |----------|----------|-------------|
-| `vocals` | 1-7 | → Vocal bus (09) → main → matrices |
-| `speaking` | 8-9 | → Vocal bus (09) → main → matrices |
-| `drums` | 22-28 | → Drums bus (12) → main → matrices |
-| `instruments` | 17-21, 29-32 | → Acoustic (10) / Electronic (13) → main → matrices |
-| `piano` | 17-18 | → Acoustic bus (10) → main → matrices |
-| `keys` or `keyboard` | 29-30 | → Electronic bus (13) → main → matrices |
-| `bass` | 31 | → Electronic bus (13) → main → matrices |
-| `guitar` | 19-20, 32 | → Acoustic (10) / Electronic (13) → main → matrices |
-| `flute` | 21 | → Acoustic bus (10) → main → matrices |
+| `vocals` | 1-7 | ch→main (FOH) + ch→Vocal bus (09)→matrices (livestream) |
+| `speaking` | 8-9 | ch→main (FOH) + ch→Vocal bus (09)→matrices (livestream) |
+| `drums` | 22-28 | ch→Drums bus (12)→matrices (livestream). Bus does NOT feed main. |
+| `instruments` | 17-21, 29-32 | ch→main (FOH) + ch→Acoustic (10)/Electronic (13)→matrices |
+| `piano` | 17-18 | ch→main (FOH) + ch→Acoustic bus (10)→matrices |
+| `keys` or `keyboard` | 29-30 | ch→main (FOH) + ch→Electronic bus (13)→matrices |
+| `bass` | 31 | ch→main (FOH) + ch→Electronic bus (13)→matrices |
+| `guitar` | 19-20, 32 | ch→main (FOH) + ch→Acoustic (10)/Electronic (13)→matrices |
+| `flute` | 21 | ch→main (FOH) + ch→Acoustic bus (10)→matrices |
 | `livestream` | Buses + matrices | Downstream only — no channel changes |
 
 ## Setup
@@ -83,39 +83,93 @@ Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRE
 ## Context Brief — Pass N
 
 **Capture**: captures/session_YYYY-MM-DD_HHMMSS.json
+**Active channels**: [list from extract.py --scope editor output]
 **Docs**: docs/CHANNELS.md, docs/VENUE.md, docs/CORRECTIONS.md, docs/TECHNICAL.md (value conversions)
 **Mode**: full | focused:<target> (channels: N-M)
+**RTA status**: present in capture | pending (poll /tmp/rta_ready) | not available
 **User preferences**: [list or "none yet"]
 **Changelog**: [factual list of changes applied so far, or "first pass"]
 ```
 
-### Spawning an Editor
+### Spawning a Pass
 
-1. Run a fresh capture: `python scripts/session_capture.py --duration 60`
-2. Assemble context brief
-3. Spawn editor as a Task agent (subagent_type: `general-purpose`) using the **Editor Instructions** section below as the prompt, with the context brief appended
-4. When the editor returns its summary, add it to your changelog
-5. Present the summary to the engineer in plain English
-6. Flag any cross-session concerns
+**First pass** — RTA starts immediately, editor starts after capture:
+
+1. Clean up stale files: `rm -f /tmp/rta_batch.jsonl /tmp/rta_ready`
+2. Start **RTA gathering agent** immediately (Task agent, background) — see RTA Gathering Agent section below. It scans all vocal/instrument channels and skips inactive ones.
+3. Run capture in parallel: `python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
+4. Capture done → get active channel list: `python scripts/extract.py --scope editor <capture_file>` — extract only the `active_channels` array from the JSON output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
+5. Assemble context brief with **RTA status: pending**
+6. Spawn **editor** (Task agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
+7. Wait for the **RTA agent** to finish (editor is already working on metering). **Note:** metering changes applied during RTA collection may affect RTA readings. This is acceptable — RTA gives rough guidance, subsequent iterations refine.
+8. Preserve RTA data: `cp /tmp/rta_batch.jsonl /tmp/rta_batch_backup.jsonl`
+9. Splice RTA data into capture: `python scripts/splice_rta.py /tmp/rta_batch.jsonl <capture_file> && touch /tmp/rta_ready` (splice deletes the JSONL source; sentinel only created on success — if splice fails, editor hits timeout and proceeds without RTA)
+10. Wait for the **editor** to finish.
+11. Clean up: `rm -f /tmp/rta_ready`
+12. Add editor summary to changelog, present to engineer, flag concerns.
+
+**Subsequent passes** — shorter capture, RTA data carried forward:
+
+1. Run capture: `python scripts/session_capture.py --duration 5`
+2. Splice saved RTA data into new capture (copy first since splice deletes its source):
+   ```bash
+   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl && python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   ```
+3. Get active channels: `python scripts/extract.py --scope editor <new_capture_file>` — extract only `active_channels`, discard the rest.
+4. Assemble context brief with **RTA status: present in capture**
+5. Spawn editor
+6. Relay summary, update changelog
+
+If RTA gathering failed or was skipped entirely (no musicians playing during capture), use **RTA status: not available**.
 
 ### End of Session
 
 When the engineer wraps up:
 1. Run a final capture
-2. Diff current state against the initial capture: `python scripts/diff_sessions.py --text`
+2. Diff current state against the initial capture: `python scripts/diff_sessions.py --text <initial_capture_file> <final_capture_file>`
 3. Analyze: what did the engineer change, undo, or leave alone?
-4. Update `docs/CORRECTIONS.md` with concise observations:
+4. Check for buses active in the capture that aren't documented in `docs/CHANNELS.md`. If found, remind the engineer to verify their routing and purpose while the board is on.
+5. Update `docs/CORRECTIONS.md` with concise observations:
    ```
    ## 2026-MM-DD
    - Vocal bus fader: Claude set -6dB, engineer raised to -4dB (pattern: Claude underestimates vocals)
    - Kick EQ 60Hz boost: +3dB, engineer left as-is
    ```
 
+### RTA Gathering Agent
+
+> Spawned by the orchestrator in parallel with the capture. Collects frequency data by scanning all vocal/instrument channels (skips inactive ones automatically).
+
+**Prompt template:**
+```
+You are an RTA data gathering agent for a Behringer X-32 mixer. Your ONLY job is to run RTA
+(frequency analysis) on each channel and collect the results to a file.
+You do NOT analyze the data or make suggestions.
+
+Setup:
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
+
+Run RTA on ALL of these channels (one at a time — X32 hardware limitation):
+Vocals: 1, 2, 3, 4, 5, 6, 7
+Speaking: 8, 9 (pastor/announcement mics — skip if no signal, rarely benefit from frequency analysis)
+Instruments: 17, 18, 19, 20, 21, 29, 30, 31, 32
+Drums: 22, 23, 24, 25, 26, 27, 28
+
+For each channel:
+python scripts/rta_listen.py --channel N --until-confident --append-to /tmp/rta_batch.jsonl
+
+If a channel returns no data (musician not playing), skip it and move on.
+
+When done, report: which channels succeeded, which were skipped, total time elapsed.
+```
+
+**Important:** The RTA agent doesn't need the capture file — it talks directly to the mixer. The orchestrator splices results into the capture after both finish. Channels where no musician is playing will be skipped automatically. **Timing:** The RTA agent must finish within 10 minutes or the editor will proceed without RTA data (polling timeout). With ~15s per active channel, this allows for roughly 40 channels — well within the 25 scanned.
+
 ---
 
 ## Editor Instructions
 
-> **Everything below this line through the end of the file is the prompt for each editor Task agent.** Copy it verbatim, then append the context brief.
+> Copy everything from `## Editor Instructions` through the end of the file (including `## Subagent Prompt Templates`) as the editor's prompt, then append the context brief. The editor needs the subagent templates to dispatch its analysis agents.
 
 You are a **mix editor agent** for a Behringer X-32 mixer. You work autonomously — assess the mix, dispatch fresh analysis subagents, deconflict suggestions, apply conservative changes, and iterate until converged. When finished, return a summary. You do NOT interact with the engineer.
 
@@ -125,7 +179,7 @@ You are a **mix editor agent** for a Behringer X-32 mixer. You work autonomously
 cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
 ```
 
-Read the capture file and all doc files from your context brief.
+Read `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, and `docs/TECHNICAL.md` from your context brief. Use patterns from CORRECTIONS.md to calibrate suggestions — e.g., if the log shows the engineer consistently raises vocal levels after Claude's suggestions, bias vocal levels slightly higher. Do NOT read the capture JSON — your context brief has the active channel list and everything you need to dispatch subagents.
 
 ### Safety
 
@@ -133,110 +187,150 @@ Read the capture file and all doc files from your context brief.
 - **NEVER touch mute.** Read-only — report it, don't change it.
 - **NEVER save scenes.**
 - **Respect existing room corrections.** Main bus LF shelf cuts and HF presence cut stay.
-- **NEVER apply preamp changes while RTA is running on that channel.**
 
-### Raw OSC Reference
+### Applying Changes — Batch Mode
 
-Most parameters work with named `control.py` flags. These require raw OSC positional args:
+**IMPORTANT:** Do NOT run individual `control.py` commands. Collect all changes into a JSON file and execute once:
 
-| Parameter | Command |
-|-----------|---------|
-| HPF on/off | `python scripts/control.py /ch/05/preamp/hpon 1` |
-| HPF frequency | `python scripts/control.py /ch/05/preamp/hpf 0.5` (0.0-1.0, log 20-400Hz) |
-| Comp attack | `python scripts/control.py /ch/05/dyn/attack 0.5` (0.0-1.0) |
-| Comp release | `python scripts/control.py /ch/05/dyn/release 0.5` (0.0-1.0) |
-| Comp knee | `python scripts/control.py /ch/05/dyn/knee 3` (int 0-5) |
-| Gate attack | `python scripts/control.py /ch/05/gate/attack 0.5` (0.0-1.0) |
-| Gate release | `python scripts/control.py /ch/05/gate/release 0.5` (0.0-1.0) |
-| Matrix fader | `python scripts/control.py /mtx/03/mix/fader 0.75` |
-| Matrix EQ | `python scripts/control.py /mtx/03/eq/1/g 0.45` |
-| Matrix comp | `python scripts/control.py /mtx/03/dyn/thr 0.6` |
-| DCA fader | `python scripts/control.py /dca/1/fader 0.75` |
-| Bus-to-matrix send | `python scripts/control.py /bus/09/mix/01/level 0.5` |
-| FX return fader | `python scripts/control.py --fxrtn 1 --fader -10dB` (this one has a named flag) |
+```bash
+# Write changes to a batch file, then execute in one connection:
+python scripts/control.py --batch /tmp/mix_changes.json
+```
 
-Replace `/ch/05` or `/mtx/03` etc. with the actual target address. Buses use `/bus/XX`, main uses `/main/st`.
+Batch file format (array of raw OSC address/value pairs — all values 0.0-1.0 normalized):
+```json
+[
+  {"address": "/ch/01/mix/fader", "value": 0.75},
+  {"address": "/ch/01/eq/1/g", "value": 0.45},
+  {"address": "/ch/05/dyn/thr", "value": 0.5},
+  {"address": "/fx/4/par/08", "value": 0.62},
+  {"address": "/mtx/03/eq/1/g", "value": 0.45}
+]
+```
 
-### Phase 1: Assess
+**IMPORTANT:** `control.py --batch` deletes the batch file after execution. Log all changes before running the batch command. In batch mode, values are sent as-is (raw OSC). For compressor ratio, use the index (0-11), NOT the actual ratio. For compressor knee, use index 0-5. See `docs/TECHNICAL.md` for all value conversions.
 
-1. Read the capture JSON. Identify **active channels**: unmuted AND fader > 0.01 AND meter activity.
-2. If focused mode: filter to target channels, but keep full capture for context.
-3. Review the changelog from the orchestrator's brief — don't re-do work already applied.
+**ALL mixer changes MUST go through batch mode**, including Phase 4. Never run individual `control.py` commands.
 
-### Phase 2: Dispatch Analysis Subagents
+Common OSC addresses (replace XX with zero-padded number):
+- Channel fader: `/ch/XX/mix/fader`
+- Channel EQ: `/ch/XX/eq/N/f`, `/ch/XX/eq/N/g`, `/ch/XX/eq/N/q` (N=1-4 for channels)
+- Channel EQ on: `/ch/XX/eq/on`
+- HPF: `/ch/XX/preamp/hpon` (1=on), `/ch/XX/preamp/hpf` (0.0-1.0, log 20-400Hz)
+- Compressor: `/ch/XX/dyn/thr`, `/ch/XX/dyn/ratio`, `/ch/XX/dyn/attack`, `/ch/XX/dyn/release`, `/ch/XX/dyn/knee` (int 0-5), `/ch/XX/dyn/mix`, `/ch/XX/dyn/mgain`
+- Gate: `/ch/XX/gate/on`, `/ch/XX/gate/thr`, `/ch/XX/gate/attack`, `/ch/XX/gate/release`, `/ch/XX/gate/range`
+- Compressor on: `/ch/XX/dyn/on`
+- Pan: `/ch/XX/mix/pan`
+- Bus: `/bus/XX/...` (same params as channels, but **6-band EQ: N=1-6**)
+- Main: `/main/st/...` (6-band EQ: N=1-6)
+- Matrix: `/mtx/XX/mix/fader`, `/mtx/XX/eq/N/g`, `/mtx/XX/dyn/thr` (6-band EQ: N=1-6)
+- DCA fader: `/dca/N/fader`
+- Bus→matrix send: `/bus/XX/mix/YY/level`
+- FX param: `/fx/N/par/XX` (01-64)
+- FX return fader: `/fxrtn/XX/mix/fader`
 
-Spawn subagents as Task agents (subagent_type: `general-purpose`). Each gets the capture file path, relevant doc paths, and their scope. **Spawn all relevant agents in parallel.**
+### Phase 1: Assess & Dispatch
 
-**Full mix mode** — dispatch all that have active channels:
-- Vocals metering agent
-- Drums metering agent
-- Instruments metering agent
-- EQ agent (all active channels, priority order)
+**YOU MUST spawn subagents. This is your primary job.** Do not analyze the mix yourself — dispatch specialists and coordinate their output.
 
-**Focused mode** — dispatch only agents relevant to the target, but with full signal path:
-- Target section's metering agent (e.g., drums → drums metering agent only)
-- EQ agent scoped to target's full signal path (channels → target bus → main → matrices)
-- If target is `livestream`: EQ agent only (bus/matrix scope, no channel changes)
+1. Review the context brief: active channels, mode, changelog, user preferences.
+2. If focused mode: identify which agent groups are in scope.
+3. **Immediately proceed to dispatching subagents** — do not read the capture or any extracts first.
 
-**While subagents work**, handle (full mix mode only, or if target channels are affected):
-- **Routing check** — Verify signal path per CHANNELS.md. Each channel's subgroup bus matches its source type. Subgroup buses (09 Vocal, 10 Acoustic, 12 Drums, 13 Electronic) feed livestream matrices only — they do NOT route to main LR (`/bus/XX/mix/st` = 0). All four should feed both Cam L (mtx03) and Cam R (mtx04). If misrouted, **note it in summary** but don't change routing.
-- **Pan** — Match stage layout per CHANNELS.md. Stereo pairs balanced L/R. Piano low/high is NOT a stereo pair.
-- **Reverb sends** — Balance per channel type. Lead vocal > piano > drums.
+**Dispatch subagents using the Task tool (subagent_type: `general-purpose`).** Each agent runs its own `extract.py` command — you do NOT read data for them. **Send ALL Task calls in a single message so they run in parallel.**
 
-### Phase 3: Deconflict & Apply
+Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subagent Prompt Templates section below) + capture file path.
 
-1. Collect all subagent suggestions
+**Two-phase dispatch** — check the context brief's **RTA status** field:
+
+- **RTA status: pending** → two-phase dispatch (first pass)
+- **RTA status: present in capture** → dispatch all 7 immediately (subsequent passes)
+- **RTA status: not available** → dispatch all 7 immediately (EQ agents can still evaluate HPF, venue rules, FX tone, bus/matrix EQ — they just won't have RTA-informed channel EQ suggestions and will note missing data)
+
+**Step 1: Dispatch metering agents NOW** (send all in one message):
+1. Vocals metering agent — `extract.py --scope metering-vocals`
+2. Drums metering agent — `extract.py --scope metering-drums`
+3. Instruments metering agent — `extract.py --scope metering-instruments`
+
+**Step 2 (only if RTA status is "pending"):** Wait for RTA data, then dispatch EQ agents:
+```bash
+# Poll with timeout (max 10 minutes). Set timeout: 600000 on the Bash tool call as a hard backstop.
+TIMEOUT=600; ELAPSED=0; while [ ! -f /tmp/rta_ready ] && [ $ELAPSED -lt $TIMEOUT ]; do sleep 5; ELAPSED=$((ELAPSED+5)); done
+if [ ! -f /tmp/rta_ready ]; then echo "RTA TIMEOUT — proceeding without RTA data"; fi
+```
+Then send all 4 EQ agents in one message:
+4. Vocals EQ agent — `extract.py --scope eq` (focus: ch1-9, bus 09, exciters)
+5. Drums EQ agent — `extract.py --scope eq` (focus: ch22-28, bus 12)
+6. Instruments EQ agent — `extract.py --scope eq` (focus: ch17-21, 29-32, bus 10, 13, amp sim)
+7. Downstream EQ agent — `extract.py --scope eq` (focus: main, matrices, remaining buses)
+
+**Focused mode** — dispatch only agents relevant to the target:
+- Target section's metering + EQ agents (e.g., drums → drums metering + drums EQ)
+- Always include Downstream EQ agent
+- If target is `livestream`: Downstream EQ agent only
+- Note: Vocals EQ agent always covers ch1-9 (singing + speaking) since they share the vocal bus. In focused `vocals` mode, tell the agent to focus on ch1-7; in focused `speaking` mode, tell it to focus on ch8-9.
+
+### Phase 2: Deconflict & Apply
+
+**Two-stage apply** — metering changes go to the mixer first, EQ changes follow when ready.
+
+**Stage 1: Metering batch** (as soon as metering agents return — don't wait for EQ):
+1. Collect metering agent suggestions (preamp, gates, compressors).
+2. Deconflict contradictory suggestions between metering agents for overlapping channels.
+3. Write to batch file and apply:
+   ```bash
+   python scripts/control.py --batch /tmp/metering_changes.json
+   ```
+4. Log every change: parameter, old value, new value.
+
+**Stage 2: EQ batch** (after EQ agents return):
+1. Collect EQ agent suggestions (HPF, EQ bands, FX tone).
 2. Deconflict:
-   - Stacked EQ boosts across channels (e.g., both piano and vocals boosted at 3kHz)
-   - Preamp vs RTA timing: if the EQ agent ran RTA on a channel, confirm `rta_listen.py` has exited before applying preamp changes from metering agents on that channel
-   - Contradictory suggestions across agent groups
-3. Apply deconflicted changes via `control.py`
-4. **Log every change**: parameter, old value, new value
+   - Stacked EQ boosts across sections (e.g., vocals and instruments both boosted at 3kHz)
+   - Cross-section interactions (e.g., kick and bass both boosted in sub range)
+3. Write to batch file and apply:
+   ```bash
+   python scripts/control.py --batch /tmp/eq_changes.json
+   ```
+4. Log every change: parameter, old value, new value.
 
-### Phase 4: Iterate
+### Phase 3: Iterate
 
-1. Run a new capture: `python scripts/session_capture.py --duration 60`
-2. **YOU MUST tear down all subagents and spawn fresh ones** with the new capture data. Never reuse a subagent from a previous pass.
-3. If new subagents return actionable suggestions, deconflict and apply.
-4. **Repeat until converged** (no new actionable suggestions) or iteration cap:
+1. Run a new capture: `python scripts/session_capture.py --duration 5`
+2. Splice RTA data into the new capture so EQ agents have frequency data:
+   ```bash
+   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl && python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   ```
+   If `/tmp/rta_batch_backup.jsonl` doesn't exist (RTA was unavailable), skip this step — EQ agents will note missing RTA data.
+3. **Dispatch all 7 subagents in parallel** with the new capture path. Never reuse a subagent from a previous pass.
+4. If new subagents return actionable suggestions, deconflict and apply via batch.
+5. **Repeat until converged** (no new actionable suggestions) or iteration cap:
    - Full mix mode: **max 4 iterations**
    - Focused mode: **max 6 iterations**
-5. If after 3 iterations subagents are still finding issues, check for oscillation (chasing the same frequency range). If so, stop and report.
+6. If after 3 iterations subagents are still finding issues, check for oscillation (chasing the same frequency range). If so, stop and report.
 
-### Phase 5: Upstream Work
+### Phase 4: Upstream Work
 
-After channel-level convergence, work the rest of the signal path.
+After channel-level convergence, dispatch upstream subagents for bus/main dynamics and livestream optimization. **Same coordination pattern as Phases 1-2** — you collect suggestions, deconflict, and batch-apply.
 
-**Full mix mode** — all buses and master:
-- **Bus compressors** — Glue each group. Threshold engages on peaks, not constant squeeze.
-- **Master compressor** — Gentle, catching peaks. Not slamming.
-- **Livestream level math** — see Phase 6.
+1. Run a fresh capture: `python scripts/session_capture.py --duration 5`
+2. If RTA backup exists, splice into new capture:
+   ```bash
+   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl && python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   ```
+3. **Full mix mode** — dispatch both in parallel:
+   - Bus Dynamics agent — `extract.py --scope dynamics`
+   - Livestream agent — `extract.py --scope livestream`
+4. **Focused mode**:
+   - Target section → Bus Dynamics agent only (tell it to scope to target's bus)
+   - `livestream` target → Livestream agent only
+5. Collect results, deconflict, apply one final batch:
+   ```bash
+   python scripts/control.py --batch /tmp/upstream_changes.json
+   ```
+6. Log every change.
 
-**Focused mode** — target's bus only:
-- **Target bus compressor + EQ** — evaluate in context of channel changes just made.
-- Note main bus and matrix state in summary, but only change them if something is clearly wrong for the target (e.g., main bus EQ is fighting a channel correction you just applied).
-
-### Phase 6: Livestream (full mix mode, or focused `livestream` mode)
-
-The engineer can't hear the livestream from the room — optimize by the numbers.
-
-**Signal path** — Trace every path to livestream matrices (Cam L / Cam R):
-- Channels → subgroup buses (Vocal, Drums, Acoustic, Electronic) → matrices
-- Channels → main LR → matrices
-- Ambient mics → matrices
-- Reverb return (CamVerb — verify bus number from capture) → matrices
-
-**Balance for two audiences** — phone speakers AND home theaters:
-- Vocal intelligibility first
-- Low end via upper harmonics (80-200Hz) — phones can't do sub-bass
-- Less reverb than FOH
-- Calculate bus-to-matrix send levels from capture data: read each bus's meter level and its current send level to Cam L/R. Target vocal bus 3-6dB above instrument buses at the matrix input for intelligibility. Adjust send levels, not bus faders (bus faders affect all downstream sends from that bus, not just livestream matrices).
-
-**Matrix compressor** — tighter than FOH. Broadcast needs consistent levels.
-
-Matrix EQ is handled by the EQ agent.
-
-### Phase 7: Summary
+### Phase 5: Summary
 
 Return to the orchestrator:
 - **Changes applied**: parameter, old → new, reasoning (one line each)
@@ -261,11 +355,20 @@ You are a **fresh analysis agent** for a Behringer X-32 mixer. Evaluate the mix 
 
 You NEVER touch the mixer. You analyze data and return suggestions only.
 
-**Context you receive:** session capture JSON, relevant docs, and your scope from the editor.
+**Setup:**
+```bash
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
+```
 
-**DCA awareness**: A channel fader at unity with its DCA at -10dB is effectively -10dB. Always account for DCA levels. **Note: some channels have no DCA assignment** (check `/ch/XX/grp/dca` bitmask = 0). Channels without a DCA are controlled by their fader alone.
+**Your data:** Run the `extract.py` command given in your prompt to get exactly the data you need. Do NOT read the full capture JSON — the extract gives you only what's relevant to your scope. Also read the doc files specified in your prompt.
 
-**Return format**: For each channel — number, label, parameter, current value, suggested value, reasoning. If a channel looks good, say so. Don't suggest changes for the sake of it.
+**DCA awareness**: A channel fader at unity with its DCA at -10dB is effectively -10dB. Always account for DCA levels. The extract includes DCA fader levels for relevant DCAs. Check each channel's `dca_groups` field — if empty (`[]`), the channel has no DCA and its fader alone determines its level.
+
+**Inactive channels**: Skip channels marked inactive in the extract, but list them in your response so the editor can flag them if musicians start playing. If your focus list includes channels not in the extract, note them as inactive.
+
+**Compressor ratio uses an index, not the actual ratio.** Map: 0=1.1:1, 1=1.3:1, 2=1.5:1, 3=2:1, 4=2.5:1, 5=3:1, 6=4:1, 7=5:1, 8=7:1, 9=10:1, 10=20:1, 11=100:1. Return the index as the raw value. See `docs/TECHNICAL.md` for full conversion tables.
+
+**Return format**: For each channel — number, label, parameter, current raw OSC value, suggested raw OSC value, human-readable equivalent (dB/Hz/ratio), reasoning. The editor needs raw values for batch files. If a channel looks good, say so. Don't suggest changes for the sake of it.
 
 ---
 
@@ -273,16 +376,22 @@ You NEVER touch the mixer. You analyze data and return suggestions only.
 
 **Scope**: Preamp + dynamics for active vocal channels. Nothing else.
 
+**Data:** `python scripts/extract.py --scope metering-vocals <capture_file>`
+**Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
+
 For each active vocal channel:
 1. **Preamp/gain staging** — Compare peak meter level to other active vocals. Adjust preamp so fader sits near unity (accounting for DCA). Fader near max = needs more preamp; near floor = too much.
-2. **Gate** — Threshold just below quietest useful signal. Gentle range for vocals (not full gate).
-3. **Compressor** — Compare signal level to threshold. Always squeezing = threshold too low. Never engaging = too high. Ratio 2:1-5:1. Mix 100% unless parallel compression is intentional. Adjust makeup gain if changing threshold/ratio.
+2. **Gate** — Check if enabled (`on` field). If it should be active but is disabled, suggest enabling first. Threshold just below quietest useful signal. Gentle range for vocals (not full gate).
+3. **Compressor** — Check if enabled (`on` field). Compare signal level to threshold. Always squeezing = threshold too low. Never engaging = too high. Ratio 2:1-5:1. Mix 100% unless parallel compression is intentional. Adjust makeup gain if changing threshold/ratio.
 
 ---
 
 ### Drums Metering Agent
 
 **Scope**: Preamp + dynamics for active drum channels. Nothing else.
+
+**Data:** `python scripts/extract.py --scope metering-drums <capture_file>`
+**Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Targets by drum type:**
 - Floor tom: comp 3:1-7:1, full gate
@@ -293,8 +402,8 @@ For each active vocal channel:
 
 For each active drum channel:
 1. **Preamp/gain staging** — Compare peak to other drums. Fader near unity (accounting for DCA).
-2. **Gate** — Full gate for close mics. Threshold below quietest hit. No gate on overheads.
-3. **Compressor** — Tame transients without killing punch. Faster attack for toms/kick, medium snare, gentler overheads.
+2. **Gate** — Check if enabled (`on` field). Enable for close mics if disabled. Full gate for close mics. Threshold below quietest hit. No gate on overheads.
+3. **Compressor** — Check if enabled (`on` field). Tame transients without killing punch. Faster attack for toms/kick, medium snare, gentler overheads.
 
 ---
 
@@ -302,63 +411,150 @@ For each active drum channel:
 
 **Scope**: Preamp + dynamics for active instrument channels. Nothing else.
 
-**Notes:**
-- Piano low/high: condensers on grand piano. NOT a stereo pair — string split.
-- Bass: DI → Ultimo compressor (intentional fuzz)
-- Electric guitar: DI → amp plugin
-- Keyboards: typically stereo pair, DI
+**Data:** `python scripts/extract.py --scope metering-instruments <capture_file>`
+**Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
+
+**Notes:** See `docs/CHANNELS.md` for source details. Key: piano low/high is NOT a stereo pair — it's a string split (affects gain staging).
 
 For each active instrument channel:
 1. **Preamp/gain staging** — Compare to peers of same type. Fader near unity (accounting for DCA).
-2. **Gate** — Generally not needed. Only if bleed is a problem.
-3. **Compressor** — Ratio 2:1-5:1 most instruments. Bass 3:1-10:1. Piano 2:1-4:1.
+2. **Gate** — Check if enabled (`on` field). Generally not needed. Only if bleed is a problem.
+3. **Compressor** — Check if enabled (`on` field). Ratio 2:1-5:1 most instruments. Bass 3:1-10:1. Piano 2:1-4:1.
 
 ---
 
-### EQ Agent
+### EQ Agent (shared rules — apply to all four EQ agents below)
 
-**Scope**: HPF, FX tone analysis, all EQ (channel → bus → main → matrix).
+RTA data is already in your extract (`rta_analysis` field per channel) — gathered before you were spawned. **Do NOT run rta_listen.py yourself.** Channels without `rta_analysis` had no signal during RTA — note them so the editor can flag for a future pass. **Note:** the `eq` extract only includes channels that were active during the capture. If a musician was playing during RTA but not during the capture, their RTA data won't appear.
 
-You are the frequency-domain specialist. You handle everything timbral.
+**Rules:**
+- Subtractive first — cut problems, don't boost solutions
+- **NEVER boost 200-400Hz for FOH** — known room buildup
+- HPF values in capture are already in Hz. For suggestions, provide both Hz and raw value. Raw OSC: `/ch/XX/preamp/hpon` (1=on), `/ch/XX/preamp/hpf` (0.0-1.0, log scale 20-400Hz)
+- **You do NOT iterate.** One thorough pass, return all suggestions. The editor handles iteration.
+- The `eq` extract contains data for ALL channels/buses. **ONLY analyze the channels listed in your Focus section.** Ignore all other channels in the output.
 
-**Context:** Session capture, CHANNELS.md (frequency lanes, voice types), VENUE.md (room problems), CORRECTIONS.md, priority list from editor, RTA data as gathered.
+**Value conversions** (provide both raw and human-readable in all suggestions):
+- EQ gain: `raw = (dB + 15) / 30` (0.0 = -15dB, 0.5 = 0dB, 1.0 = +15dB)
+- EQ frequency: log scale 20-20kHz (see `docs/TECHNICAL.md`)
+- HPF: log scale 20-400Hz
+- Full reference: `docs/TECHNICAL.md`
+
+**Return format**: Target (channel/bus), channel number, label, parameter, current raw → suggested raw, human-readable equivalent, reasoning.
+
+---
+
+### Vocals EQ Agent
+
+**Scope**: EQ + HPF for vocal channels (ch1-9) and vocal bus (09). Also evaluates exciter FX tone.
+
+**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch01-ch09, bus09, FX exciters
+**Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Work order:**
+1. **Exciter tone** — Check FX4 (Tammy exciter) and FX8 (BGV exciter) timbre:
+   - Tammy: target +10 to +15 (Timbre High par/08, Dual Exciter). OSC 0.6-0.65.
+   - BGVs: target 0 to +5. Check FX8's `type_name` in the extract: if "Dual Exciter" use par/08 (Timbre High), if "Stereo Exciter" use par/04 (Timbre). OSC 0.5-0.55.
+   - Formula: `osc_value = (timbre + 50) / 100`
+2. **Channel HPF** — On for all vocals. Alto: 120-150Hz. Baritone: 80-100Hz. Tenor: 100-120Hz.
+3. **Channel EQ** — Use RTA data. Gentle presence boosts only (stacked boosts across singers cause harshness). Lead vocal gets priority for presence range.
+4. **Vocal bus EQ** — Shape the group. Complement channel EQ, don't duplicate.
 
-**1. FX tone analysis** (first — informs all EQ decisions):
-- Exciters: lead vocal brighter (+10 to +15), BGVs warmer (0 to +5)
-  - Timbre is `/fx/N/par/08` (Dual) or `/fx/N/par/04` (Stereo). OSC 0.0-1.0 maps to -50 to +50. Formula: `osc_value = (timbre + 50) / 100`. So +10 = 0.6, +15 = 0.65, 0 = 0.5, +5 = 0.55.
-- Amp sim: complement guitar's frequency lane
-- Note findings — they affect EQ suggestions downstream
+---
 
-**2. Channel HPF:**
-- On for everything except bass and kick
-- Alto vocals: 120-150Hz. Baritone: 80-100Hz. Tenor: 100-120Hz.
-- Piano: 25-80Hz. Acoustic guitar: 60-150Hz. Flute: 150-300Hz.
-- HPF values in capture are already in Hz. For suggestions, provide both Hz and raw value. Raw OSC: `/ch/XX/preamp/hpon` (1=on), `/ch/XX/preamp/hpf` (0.0-1.0, log scale 20-400Hz). Use `hpf_value_to_hz()` from common.py if you need to convert.
+### Drums EQ Agent
 
-**3. Channel EQ** (RTA-informed, priority order):
-```bash
-python scripts/rta_listen.py --channel N --update-session
-```
+**Scope**: EQ + HPF for drum channels (ch22-28) and drum bus (12).
 
-**IMPORTANT: RTA MUST be run sequentially — one channel at a time.** The X32's RTA source (`/-prefs/rta/source`) is a global setting. Running RTA on multiple channels simultaneously produces garbage data. **NEVER dispatch parallel RTA requests.** Queue channels by priority and process one by one.
+**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch22-ch28, bus12
+**Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
-- Subtractive first — cut problems, don't boost solutions
-- **NEVER boost 200-400Hz for FOH** — known room buildup. Livestream-only channels exempt.
-- Cross-channel: stacked presence boosts cause harshness. Spread or keep gentle.
-- Piano low vs high need different EQ
-- Frequency lanes: piano warm mids (400Hz-2kHz), keyboard sparkle (3kHz+), electric guitar low warmth via amp sim
-- If RTA returns insufficient data (channel quiet), skip and revisit
+**Work order:**
+1. **Channel HPF** — On for all drums except kick. Snare: 80-100Hz. Toms: 60-80Hz. Overheads (ch27 Hi-hats, ch28 Ride): 80-120Hz — these are spaced-pair overhead mics positioned near cymbals, NOT dedicated cymbal close-mics. Keep full drum kit frequency range.
+2. **Channel EQ** — Use RTA data. Kick: sub punch (50-80Hz), click (2-5kHz). Snare: body (200Hz), crack (2-4kHz). Toms: fundamental + attack. Overheads: air, reduce bleed.
+3. **Drum bus EQ** — Glue the kit. Complement channel EQ.
 
-**4. Bus EQ** — Shape groups. Complement channel EQ, don't duplicate.
+---
 
-**5. Main EQ** — Respect existing room corrections (LF cuts, HF presence cut). Only adjust if RTA shows unhandled problems.
+### Instruments EQ Agent
 
-**6. Matrix EQ** — Different than room. Phone speaker limitations, codec artifacts.
+**Scope**: EQ + HPF for instrument channels (ch17-21, 29-32) and buses (10 Acoustic, 13 Electronic). Also evaluates amp sim FX tone.
 
-**You do NOT iterate.** You are a fresh agent — do one thorough pass and return all suggestions. The editor handles iteration by tearing you down and spawning a fresh EQ agent with updated capture data after applying changes.
+**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch17-ch21, ch29-ch32, bus10, bus13, FX amp sim
+**Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
-Your job each invocation: run RTA on priority channels, analyze the full EQ picture top to bottom (channels → buses → main → matrix), and return everything you'd change. If a channel is quiet during RTA, note it so the editor can retry on the next pass.
+**Work order:**
+1. **Amp sim tone** — Check FX7 parameters. Complement guitar's frequency lane (low warmth, cut mids).
+2. **Channel HPF** — Piano: 25-80Hz. Acoustic guitar: 60-150Hz. Flute: 150-300Hz. Keys: 40-80Hz. Bass: OFF. Electric guitar: 60-100Hz.
+3. **Channel EQ** — Use RTA data. Frequency lanes:
+   - Piano: warm mids (400Hz-2kHz), presence (2-4kHz). Low vs high need different EQ.
+   - Keyboard: sparkle (3kHz+), cut mids
+   - Electric guitar: low warmth via amp sim, cut mids
+   - Bass: don't fight kick in sub range
+   - Flute: presence (2-4kHz), air (6-8kHz)
+4. **Bus EQ** — Acoustic bus (10): shape acoustic group. Electronic bus (13): shape electronic group.
 
-**Return format**: Target (channel/bus/main/matrix), channel number, label, parameter, current → suggested, reasoning. Group by level (channel → bus → main → matrix).
+---
+
+### Downstream EQ Agent
+
+**Scope**: Main bus EQ, matrix EQ (livestream + house), and any buses not covered by section agents (ambient, CamVerb, monitors).
+
+**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not in {09, 10, 12, 13}
+**Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
+
+**Work order:**
+1. **Main bus EQ** — Respect existing room corrections (LF shelf cuts, HF presence cut). Only suggest changes if something is clearly wrong or fighting upstream corrections. Check VENUE.md for known room problems.
+2. **Matrix EQ** — Optimize for each output's audience:
+   - Cam L/R (mtx03/04): livestream. Phone speakers can't reproduce sub-bass — boost upper harmonics (80-200Hz) instead. Tame sibilance (5-8kHz). Slight presence lift for vocal intelligibility.
+   - Mono House (mtx01): room PA supplement. Similar to main but mono-compatible.
+   - Foyer (mtx02): background listening. Roll off lows, gentle presence.
+   - Assisted Listening (mtx05): clarity-first. Boost speech frequencies (1-4kHz), reduce low end.
+3. **Remaining bus EQ** — Ambient bus, CamVerb, etc. Shape for their purpose (reverb return EQ should complement, not duplicate, channel reverb sends).
+
+---
+
+### Bus Dynamics Agent
+
+**Scope**: Bus compressors and master compressor. No channel-level or EQ work.
+
+**Data:** `python scripts/extract.py --scope dynamics <capture_file>`
+**Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
+
+**Work order:**
+1. **Subgroup bus compressors** (Vocal 09, Acoustic 10, Drums 12, Electronic 13):
+   - Glue each group. Threshold should engage on peaks, not constant squeeze.
+   - Compare approach across buses — drums typically need faster attack than vocals.
+   - Check ratio, attack, release, knee, makeup gain.
+2. **Master compressor**:
+   - Gentle, catching peaks. Not slamming.
+   - If gain reduction would be constant (threshold well below expected signal), threshold is too low.
+
+**Focused mode**: Only evaluate the target's bus compressor. Note main compressor state but only suggest changes if clearly wrong.
+
+---
+
+### Livestream Agent
+
+**Scope**: Livestream send level balance and matrix compressors. No channel-level, bus EQ, or bus compressor work.
+
+**Data:** `python scripts/extract.py --scope livestream <capture_file>`
+**Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/TECHNICAL.md`
+
+The engineer can't hear the livestream from the room — optimize by the numbers.
+
+**Signal path** — Trace every path to livestream matrices (Cam L / Cam R):
+- Channels → subgroup buses (Vocal, Drums, Acoustic, Electronic) → matrices
+- Channels → main LR → matrices
+- Ambient mics → matrices
+- Reverb return (CamVerb — verify bus number from capture) → matrices
+
+**Work order:**
+1. **Send level balance** — Read each bus's fader level and its current send level to Cam L/R. Target vocal bus 3-6dB above instrument buses at the matrix input for intelligibility. Adjust send levels, not bus faders (bus faders affect all downstream sends, not just livestream matrices).
+2. **Matrix compressors** — Tighter than FOH. Broadcast needs consistent levels.
+3. **Balance for two audiences** — phone speakers AND home theaters:
+   - Vocal intelligibility first
+   - Low end via upper harmonics (80-200Hz) — phones can't do sub-bass
+   - Less reverb than FOH
+
+Matrix EQ is handled by the Downstream EQ agent. Do not duplicate.

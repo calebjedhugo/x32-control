@@ -23,7 +23,7 @@ If something fails or data looks wrong:
 - `docs/VENUE.md` - Room acoustics, PA, known issues
 - `docs/CHANNELS.md` - Detailed channel info, personnel, stage layout
 - `docs/TECHNICAL.md` - Developer/debug notes (OSC addresses, library workarounds)
-- `notes/2026-01-21-session.md` - Jan 21 session notes (bugs found, EQ changes, channel assignments)
+- `docs/CORRECTIONS.md` - Session learning log (what Claude suggested vs. what engineer kept)
 
 ## People
 *Channel assignments vary - check most recent capture*

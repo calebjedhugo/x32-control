@@ -40,6 +40,32 @@ python scripts/diff_sessions.py --text                       # Human-readable re
 ```
 Shows fader, EQ, mute, dynamics, and FX changes between sessions.
 
+### Data Extraction (Offline - No Mixer Needed)
+```bash
+python scripts/extract.py --scope metering-vocals captures/session_XXX.json   # Vocal preamp+dynamics
+python scripts/extract.py --scope metering-drums captures/session_XXX.json    # Drum preamp+dynamics
+python scripts/extract.py --scope metering-instruments captures/session_XXX.json  # Instrument preamp+dynamics
+python scripts/extract.py --scope eq captures/session_XXX.json                # All EQ+HPF+FX tone
+python scripts/extract.py --scope editor captures/session_XXX.json            # Routing+faders+DCAs overview
+python scripts/extract.py --scope dynamics captures/session_XXX.json          # Bus/main/matrix compressors
+python scripts/extract.py --scope livestream captures/session_XXX.json        # Bus→matrix sends+levels
+```
+Extracts targeted subsets from a session capture. Used by auto-awesome subagents to get only the data they need. Omits capture file arg to use latest.
+
+### Batch Control (Single Connection)
+```bash
+python scripts/control.py --batch changes.json
+python scripts/control.py --batch changes.json --dry-run
+```
+Executes all changes in one mixer connection. File format: `[{"address": "/ch/01/mix/fader", "value": 0.75}, ...]`. Deletes the batch file after execution.
+
+### RTA Batch Collection
+```bash
+python scripts/rta_listen.py --channel 5 --until-confident --append-to /tmp/rta_batch.jsonl
+python scripts/splice_rta.py /tmp/rta_batch.jsonl captures/session_XXX.json
+```
+`--append-to` collects RTA results to a JSONL file (one line per channel). `splice_rta.py` merges all results into a capture file and deletes the JSONL temp file.
+
 ### Other Commands
 | Command | Description |
 |---------|-------------|
@@ -85,7 +111,9 @@ For raw control: `python scripts/control.py <address> <value>` (positional args,
 - `scripts/diff_sessions.py` - **Session diff**: compares two captures (offline)
 - `scripts/capture.py` - Meter-only capture (rarely needed directly)
 - `scripts/query.py` - Read mixer state
-- `scripts/control.py` - Modify parameters
+- `scripts/control.py` - Modify parameters (supports `--batch` for bulk changes)
+- `scripts/extract.py` - Extract scoped data from session captures
+- `scripts/splice_rta.py` - Merge batch RTA data into session capture
 - `scripts/snapshot.py` - Full state dump
 
 ## Config

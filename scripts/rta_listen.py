@@ -537,6 +537,12 @@ Output shows 9 frequency bands for practical EQ decisions:
         action="store_true",
         help="Splice RTA results into the most recent session capture"
     )
+    parser.add_argument(
+        "--append-to",
+        type=str,
+        metavar="FILE",
+        help="Append compact JSON result to FILE (one line per channel, for batch collection)"
+    )
 
     args = parser.parse_args()
 
@@ -605,8 +611,15 @@ Output shows 9 frequency bands for practical EQ decisions:
                 result['session_updated'] = False
                 result['session_warning'] = 'splice_failed'
 
-    # Output JSON
-    print(json.dumps(result, indent=2))
+    # Append to batch collection file if requested
+    if args.append_to:
+        with open(args.append_to, 'a') as f:
+            f.write(json.dumps(result) + '\n')
+        print(f"Result appended to {args.append_to}", file=sys.stderr)
+
+    # Output JSON to stdout (skip if appending to file)
+    if not args.append_to:
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

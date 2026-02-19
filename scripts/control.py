@@ -19,10 +19,13 @@ Usage:
     python control.py --fx 1 --fx-param 1 --fx-value 0.5
     python control.py --fxrtn 1 --fader -10dB
     python control.py --channel 5 --fader -10dB --dry-run
+    python control.py --batch changes.json
+    python control.py --batch changes.json --dry-run
 """
 
 import argparse
 import asyncio
+import json
 import re
 import sys
 from pathlib import Path
@@ -311,6 +314,14 @@ async def main():
         help="FX return to control (1-8)"
     )
 
+    # Batch mode
+    parser.add_argument(
+        "--batch",
+        type=str,
+        metavar="FILE",
+        help='Execute batch of raw OSC commands from JSON file [{"address": ..., "value": ...}, ...]'
+    )
+
     # Options
     parser.add_argument(
         "--dry-run",
@@ -324,6 +335,49 @@ async def main():
     )
 
     args = parser.parse_args()
+
+    # Batch mode — bypass all other argument validation
+    if args.batch:
+        batch_path = Path(args.batch)
+        if not batch_path.exists():
+            print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
+            sys.exit(1)
+
+        with open(batch_path) as f:
+            commands = json.load(f)
+
+        if not commands:
+            print("No commands in batch file", file=sys.stderr)
+            return
+
+        print(f"Batch: {len(commands)} commands", file=sys.stderr)
+
+        if args.dry_run:
+            for cmd in commands:
+                print(f"[DRY RUN] Would set {cmd['address']} = {cmd['value']}")
+            return
+
+        mixer = await get_mixer()
+        try:
+            success = 0
+            for cmd in commands:
+                address = cmd["address"]
+                value = cmd["value"]
+                if isinstance(value, str):
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        pass
+                result = await set_value(mixer, address, value)
+                if result:
+                    success += 1
+                await asyncio.sleep(0.05)
+
+            print(f"Batch complete: {success}/{len(commands)} succeeded")
+        finally:
+            await mixer.stop()
+            batch_path.unlink()
+        return
 
     # Validate arguments
     if args.raw_address and args.raw_value:

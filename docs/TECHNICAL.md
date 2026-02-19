@@ -124,17 +124,23 @@ DCA5 (Monitors):  bus01-06
 Note: ch07 (Kat), ch23-27 (drums except floor tom) have no DCA assignment.
 ch08 (pastor) is in DCA3 (Inst) instead of DCA2 (Speaking) — possible misconfiguration.
 
+## Meter Subscription
+
+**IMPORTANT**: `/batchsubscribe` does NOT work for meters on this X32. Use request-polling instead:
+```
+/meters ,siii '/meters/0' 0 0 3
+```
+Poll every ~50ms with `/xremote` keep-alive. Responses come back as `/meters/0` with a blob.
+
 ## Meter Blob Structure
 
-X32 meter blob parsing (capture.py):
-- Index 0: Header (~17920)
-- Index 1: Header (0)
-- Index 2-17: Channels 1-16
-- Index 18: Header (~28603)
-- Index 19-34: Channels 17-32
-- Index 35+: Aux inputs
+X32 meter blob format (verified 2026-02-18):
+- First 4 bytes: LE int32 count (typically 70)
+- Remaining: count LE float32 values (0.0-1.0 range)
+- Indices 0-31: Channels 1-32
+- Indices 32+: Aux inputs
 
-Activity detection uses `abs(raw_value)` since audio oscillates positive and negative.
+Activity threshold: 0.0005 (float). Values are already positive (no abs needed).
 
 ## FX Parameter Mappings
 
@@ -259,6 +265,7 @@ python scripts/query.py --fx 1
 
 ## Changelog
 
+- **Feb 18, 2026**: Fixed meter capture — replaced broken `/batchsubscribe` with `/meters` request-polling; fixed blob parsing from BE int16 to LE float32; updated activity threshold from 500 (int) to 0.0005 (float); fixed `average_peak` int cast to round().
 - **Feb 15, 2026**: Full parameter verification (29/32 pass). Added matrix capture, channel/bus routing, DCA groups, bus→matrix sends, main→matrix sends. New control.py args: --mute/--unmute, --pan, --comp-ratio, --comp-mix, --comp-mgain, --gate-range. New analyze.py checks: livestream routing, DCA coverage, matrix EQ. Documented comp knee (stepped 0-5), matrix/DCA OSC addresses.
 - **Jan 25, 2026**: Fixed pan capture, stereo link detection, insert_sel mapping, added Dual Exciter params
 - **Jan 18, 2026**: Fixed EQ/dynamics/FX read/write, meter blob parsing, compressor ratio display, HPF queries
