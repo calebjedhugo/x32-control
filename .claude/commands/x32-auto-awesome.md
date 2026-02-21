@@ -186,7 +186,10 @@ When done (or if no channels needed retry): touch /tmp/rta_retry_done
 Report: which channels succeeded (pass 1 vs pass 2), which were silent both times, total time elapsed.
 ```
 
-**Important:** The RTA agent doesn't need the capture file — it talks directly to the mixer. The orchestrator splices results into the capture after both finish. **Two-pass design:** The quick pass uses `--silence-timeout 3` to skip silent channels fast (~3s instead of 5-15s), letting the orchestrator splice partial data sooner. The retry pass gives previously-silent channels the full `--until-confident` duration in case musicians started playing. **Timing:** The quick pass should finish within 5 minutes (most silent channels exit in ~3s). The retry pass gets another 5 minutes. Total budget: 10 minutes.
+**Important:**
+- The RTA agent doesn't need the capture file — it talks directly to the mixer. The orchestrator splices results into the capture after both finish.
+- **Two-pass design:** Quick pass uses `--silence-timeout 3` to skip silent channels fast (~3s instead of 5-15s), letting the orchestrator splice partial data sooner. Retry pass gives previously-silent channels the full `--until-confident` duration in case musicians started playing.
+- **Timing:** Quick pass should finish within 5 minutes. Retry pass gets another 5 minutes. Total budget: 10 minutes.
 
 ---
 
