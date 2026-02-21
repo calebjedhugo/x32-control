@@ -61,7 +61,16 @@ python scripts/rta_listen.py --channel 26 --duration 15 --update-session
 
 # Vocal - use until-confident for sustained sources
 python scripts/rta_listen.py --channel 1 --until-confident --update-session
+
+# Quick scan with silence early-exit (3s timeout if no signal)
+python scripts/rta_listen.py --channel 1 --until-confident --silence-timeout 3 --append-to /tmp/rta_batch.jsonl
 ```
+
+### Silence Timeout (--silence-timeout)
+
+Exits early if no meaningful signal is detected after the specified number of seconds. Useful for batch scanning many channels — silent channels exit in ~3s instead of the full `--until-confident` duration (5-15s).
+
+The result includes `"silence_exit": true` when the timeout triggers, so callers can identify which channels need a retry.
 
 ### Session Splicing (--update-session)
 

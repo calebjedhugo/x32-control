@@ -11,6 +11,7 @@ Usage:
     python rta_listen.py --channel 26 --duration 30      # Custom duration
     python rta_listen.py --channel 26 --until-confident  # Auto-stop when stable
     python rta_listen.py --channel 26 --update-session   # Splice into session capture
+    python rta_listen.py --channel 1 --until-confident --silence-timeout 3  # Quick scan, exit early if silent
 """
 
 import argparse
@@ -258,19 +259,25 @@ class RTAListener:
 
         return total_cv / valid_bins if valid_bins > 0 else float('inf')
 
-    async def listen(self, duration: float, until_confident: bool = False) -> Dict:
+    async def listen(self, duration: float, until_confident: bool = False,
+                     silence_timeout: Optional[float] = None) -> Dict:
         """
         Listen to RTA and meter data for specified duration.
 
         Args:
             duration: Maximum capture duration in seconds
             until_confident: If True, stop early when data stabilizes
+            silence_timeout: If set, exit early after this many seconds if
+                no meaningful signal detected (all samples below MIN_SIGNAL_THRESHOLD)
 
         Returns:
-            Dictionary with aggregated frequency band analysis and peak level
+            Dictionary with aggregated frequency band analysis and peak level.
+            Includes 'silence_exit: true' if exited due to silence timeout.
         """
         self.samples = []
         self.peak_meter = 0
+        silence_exit = False
+        has_signal = False
         start_time = time.time()
         last_xremote = start_time
         last_subscribe = start_time
@@ -278,6 +285,8 @@ class RTAListener:
         print(f"Listening for RTA data...", file=sys.stderr)
         if until_confident:
             print(f"  Will stop when data stabilizes (max {duration}s)", file=sys.stderr)
+        if silence_timeout is not None:
+            print(f"  Silence timeout: {silence_timeout}s", file=sys.stderr)
 
         while time.time() - start_time < duration:
             current_time = time.time()
@@ -298,6 +307,8 @@ class RTAListener:
             rta_data, meter_level = self.receive_data()
             if rta_data:
                 self.samples.append(rta_data)
+                if not has_signal and max(rta_data) >= MIN_SIGNAL_THRESHOLD:
+                    has_signal = True
             if meter_level is not None and meter_level > self.peak_meter:
                 self.peak_meter = meter_level
 
@@ -309,6 +320,12 @@ class RTAListener:
                         print(f"  Data stabilized after {elapsed:.1f}s ({len(self.samples)} samples)", file=sys.stderr)
                         break
 
+            # Check for silence timeout
+            if silence_timeout is not None and elapsed >= silence_timeout and not has_signal:
+                silence_exit = True
+                print(f"  No signal after {elapsed:.1f}s — silence timeout", file=sys.stderr)
+                break
+
             # Progress update
             if len(self.samples) > 0 and len(self.samples) % 50 == 0:
                 print(f"  {len(self.samples)} samples collected...", file=sys.stderr)
@@ -319,7 +336,10 @@ class RTAListener:
         print(f"Capture complete: {len(self.samples)} samples in {actual_duration:.1f}s", file=sys.stderr)
         print(f"  Peak meter level: {self.peak_meter}", file=sys.stderr)
 
-        return self.analyze()
+        result = self.analyze()
+        if silence_exit:
+            result['silence_exit'] = True
+        return result
 
     def analyze(self) -> Dict:
         """Analyze collected RTA samples and return band-aggregated results."""
@@ -502,6 +522,7 @@ Examples:
     python rta_listen.py --channel 26                    # Kick drum, 15s
     python rta_listen.py --channel 1 --duration 30       # Vocal, 30s
     python rta_listen.py --channel 26 --until-confident  # Auto-stop when stable
+    python rta_listen.py --channel 1 --until-confident --silence-timeout 3  # Quick scan
 
 Output shows 9 frequency bands for practical EQ decisions:
   sub (20-60Hz)        - Rumble, kick fundamental
@@ -538,6 +559,12 @@ Output shows 9 frequency bands for practical EQ decisions:
         help="Splice RTA results into the most recent session capture"
     )
     parser.add_argument(
+        "--silence-timeout",
+        type=float,
+        metavar="N",
+        help="Exit early if no meaningful signal after N seconds (useful for quick scans)"
+    )
+    parser.add_argument(
         "--append-to",
         type=str,
         metavar="FILE",
@@ -567,7 +594,8 @@ Output shows 9 frequency bands for practical EQ decisions:
 
         result = await listener.listen(
             duration=args.duration,
-            until_confident=args.until_confident
+            until_confident=args.until_confident,
+            silence_timeout=args.silence_timeout
         )
     except ConnectionError as e:
         print(f"Error: {e}", file=sys.stderr)

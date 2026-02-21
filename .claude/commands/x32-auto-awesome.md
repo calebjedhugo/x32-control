@@ -95,18 +95,26 @@ Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRE
 
 **First pass** — RTA starts immediately, editor starts after capture:
 
-1. Clean up stale files: `rm -f /tmp/rta_batch.jsonl /tmp/rta_ready`
-2. Start **RTA gathering agent** immediately (Task agent, background) — see RTA Gathering Agent section below. It scans all vocal/instrument channels and skips inactive ones.
+1. Clean up stale files: `rm -f /tmp/rta_batch_quick.jsonl /tmp/rta_batch_retry.jsonl /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl /tmp/rta_quick_done /tmp/rta_retry_done /tmp/rta_ready`
+2. Start **RTA gathering agent** immediately (Task agent, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
 3. Run capture in parallel: `python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
 4. Capture done → get active channel list: `python scripts/extract.py --scope editor <capture_file>` — extract only the `active_channels` array from the JSON output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
 5. Assemble context brief with **RTA status: pending**
 6. Spawn **editor** (Task agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
-7. Wait for the **RTA agent** to finish (editor is already working on metering). **Note:** metering changes applied during RTA collection may affect RTA readings. This is acceptable — RTA gives rough guidance, subsequent iterations refine.
-8. Preserve RTA data: `cp /tmp/rta_batch.jsonl /tmp/rta_batch_backup.jsonl`
-9. Splice RTA data into capture: `python scripts/splice_rta.py /tmp/rta_batch.jsonl <capture_file> && touch /tmp/rta_ready` (splice deletes the JSONL source; sentinel only created on success — if splice fails, editor hits timeout and proceeds without RTA)
-10. Wait for the **editor** to finish.
-11. Clean up: `rm -f /tmp/rta_ready`
-12. Add editor summary to changelog, present to engineer, flag concerns.
+7. Poll for quick pass to finish (5 min timeout):
+   ```bash
+   TIMEOUT=300; ELAPSED=0; while [ ! -f /tmp/rta_quick_done ] && [ $ELAPSED -lt $TIMEOUT ]; do sleep 5; ELAPSED=$((ELAPSED+5)); done
+   ```
+8. Back up quick data BEFORE splice (splice deletes source): `cp /tmp/rta_batch_quick.jsonl /tmp/rta_batch_backup.jsonl`
+9. Splice quick data into capture + signal editor: `python scripts/splice_rta.py /tmp/rta_batch_quick.jsonl <capture_file> && touch /tmp/rta_ready` — EQ agents can now start with partial RTA data.
+10. Poll for retry pass to finish (5 min timeout):
+    ```bash
+    TIMEOUT=300; ELAPSED=0; while [ ! -f /tmp/rta_retry_done ] && [ $ELAPSED -lt $TIMEOUT ]; do sleep 5; ELAPSED=$((ELAPSED+5)); done
+    ```
+11. If retry data exists, append to backup: `[ -f /tmp/rta_batch_retry.jsonl ] && cat /tmp/rta_batch_retry.jsonl >> /tmp/rta_batch_backup.jsonl`. Do NOT splice retry data into the current capture (editor is already using it). Retry data becomes available on iteration 2+ via the backup.
+12. Wait for the **editor** to finish.
+13. Clean up: `rm -f /tmp/rta_ready /tmp/rta_quick_done /tmp/rta_retry_done`
+14. Add editor summary to changelog, present to engineer, flag concerns.
 
 **Subsequent passes** — shorter capture, RTA data carried forward:
 
@@ -149,21 +157,36 @@ You do NOT analyze the data or make suggestions.
 Setup:
 cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
 
-Run RTA on ALL of these channels (one at a time — X32 hardware limitation):
+Channels to scan (one at a time — X32 hardware limitation):
 Vocals: 1, 2, 3, 4, 5, 6, 7
 Speaking: 8, 9 (pastor/announcement mics — skip if no signal, rarely benefit from frequency analysis)
 Instruments: 17, 18, 19, 20, 21, 29, 30, 31, 32
 Drums: 22, 23, 24, 25, 26, 27, 28
 
+## Pass 1: Quick scan (with silence early-exit)
+
 For each channel:
-python scripts/rta_listen.py --channel N --until-confident --append-to /tmp/rta_batch.jsonl
+python scripts/rta_listen.py --channel N --until-confident --silence-timeout 3 --append-to /tmp/rta_batch_quick.jsonl
 
-If a channel returns no data (musician not playing), skip it and move on.
+Track which channels exit with "silence_exit": true in the output (grep stderr for
+"silence timeout" or check the JSONL line). Keep a list of silent channels.
 
-When done, report: which channels succeeded, which were skipped, total time elapsed.
+When ALL channels are scanned: touch /tmp/rta_quick_done
+
+## Pass 2: Retry silent channels (full duration)
+
+For each channel that exited silently in Pass 1:
+python scripts/rta_listen.py --channel N --until-confident --append-to /tmp/rta_batch_retry.jsonl
+
+No --silence-timeout this time — give them the full duration.
+If a channel STILL returns no data, skip it.
+
+When done (or if no channels needed retry): touch /tmp/rta_retry_done
+
+Report: which channels succeeded (pass 1 vs pass 2), which were silent both times, total time elapsed.
 ```
 
-**Important:** The RTA agent doesn't need the capture file — it talks directly to the mixer. The orchestrator splices results into the capture after both finish. Channels where no musician is playing will be skipped automatically. **Timing:** The RTA agent must finish within 10 minutes or the editor will proceed without RTA data (polling timeout). With ~15s per active channel, this allows for roughly 40 channels — well within the 25 scanned.
+**Important:** The RTA agent doesn't need the capture file — it talks directly to the mixer. The orchestrator splices results into the capture after both finish. **Two-pass design:** The quick pass uses `--silence-timeout 3` to skip silent channels fast (~3s instead of 5-15s), letting the orchestrator splice partial data sooner. The retry pass gives previously-silent channels the full `--until-confident` duration in case musicians started playing. **Timing:** The quick pass should finish within 5 minutes (most silent channels exit in ~3s). The retry pass gets another 5 minutes. Total budget: 10 minutes.
 
 ---
 
@@ -429,7 +452,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Rules:**
 - Subtractive first — cut problems, don't boost solutions
-- **NEVER boost 200-400Hz for FOH** — known room buildup
+- **Avoid boosting 200-400Hz for FOH** — significant room buildup. Only boost here if RTA data clearly shows a deficit
 - HPF values in capture are already in Hz. For suggestions, provide both Hz and raw value. Raw OSC: `/ch/XX/preamp/hpon` (1=on), `/ch/XX/preamp/hpf` (0.0-1.0, log scale 20-400Hz)
 - **You do NOT iterate.** One thorough pass, return all suggestions. The editor handles iteration.
 - The `eq` extract contains data for ALL channels/buses. **ONLY analyze the channels listed in your Focus section.** Ignore all other channels in the output.
