@@ -121,7 +121,7 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 See `docs/VENUE.md` for room acoustics, known problems, and mixing rules.
 
-**Key rule: NEVER boost 200-400Hz for FOH** — room has severe low-mid buildup.
+**Key rule: Avoid boosting 200-400Hz for FOH** — room has significant low-mid buildup. Only boost if RTA data clearly shows a deficit.
 
 **Frequency lanes** to reduce fighting:
 - Piano: warm mids (400Hz-2kHz), presence (2-4kHz)

@@ -40,7 +40,7 @@ Read this when discussing room acoustics, PA issues, or mix strategy.
 
 ## Mixing Rules (Room-Aware)
 
-- **NEVER boost 200-400Hz** - room already has too much low-mid energy. "Kick needs body" → try 60-80Hz or attack (2-4kHz) instead
+- **Avoid boosting 200-400Hz for FOH** - room already has significant low-mid buildup. "Kick needs body" → try 60-80Hz or attack (2-4kHz) instead. Only boost here if RTA data clearly shows a deficit
 - **Trust data over booth ears** - booth hears a different room than congregation. Use capture data and meters
 - **Master bus already cuts LF** - don't over-cut on channels; some is handled globally
 - **Bleed matters** - piano bleeds into vocal mics. EQ changes to vocals affect piano bleed too
