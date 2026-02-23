@@ -33,9 +33,15 @@ def get_active_channels(capture):
 
 def get_meter_peaks(capture):
     """Build channel meter peak lookup from gain staging analysis."""
-    issues = capture.get("analysis", {}).get("gain_staging", {}).get("issues", [])
-    avg = capture.get("analysis", {}).get("gain_staging", {}).get("average_peak", 0)
-    return {"average_peak": avg, "issues": {i["channel"]: i for i in issues}}
+    gain_staging = capture.get("analysis", {}).get("gain_staging", {})
+    issues = gain_staging.get("issues", [])
+    avg = gain_staging.get("average_peak", 0)
+    channel_peaks = gain_staging.get("channel_peaks", {})
+    return {
+        "average_peak": avg,
+        "issues": {i["channel"]: i for i in issues},
+        "channel_peaks": channel_peaks,
+    }
 
 
 def get_relevant_dcas(capture, channel_nums):
@@ -83,11 +89,15 @@ def extract_metering(capture, scope_channels):
             "dca_groups": ch_data.get("dca_groups", []),
         }
 
-        # Add meter issue if this channel has one
+        # Add meter peak for this channel (needed for compressor threshold evaluation)
+        ch_peak_key = f"ch{ch_num:02d}"
+        if ch_peak_key in meter_info["channel_peaks"]:
+            ch_extract["meter_peak"] = meter_info["channel_peaks"][ch_peak_key]
+
+        # Add gain staging issue if flagged
         issue = meter_info["issues"].get(ch_num)
         if issue:
             ch_extract["meter_issue"] = issue.get("issue")
-            ch_extract["meter_peak"] = issue.get("peak_raw")
             ch_extract["meter_detail"] = issue.get("detail")
 
         result["channels"][ch_key] = ch_extract

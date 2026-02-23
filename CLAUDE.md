@@ -43,13 +43,15 @@ If something fails or data looks wrong:
 
 | FX Slot | Effect | Routed to |
 |---------|--------|-----------|
-| FX 4 | Exciter | Tammy only |
+| FX 4 | Exciter | Tammy only (channel insert) |
+| FX 5 | Ultimo Compressor | Drums FOH bus 07 (insert) |
+| FX 6 | Precision Limiter | Drums FOH bus 08 (insert) |
 | FX 7 | Amp Sim | Electric guitar (ch32) |
-| FX 8 | Exciter | Background vocals |
+| FX 8 | Stereo Exciter | Voices FOH bus 05/06 (insert — vocals ch2-7 to FOH + livestream) |
 
 **Exciter Timbre**: -50 to +50 scale (0 = neutral)
-- Tammy: +10 to +15 (brighter to cut through)
-- Background vocals: 0 to +5 (warm, blends)
+- Tammy (FX4): +10 to +15 (brighter to cut through — affects FOH and livestream)
+- Voices FOH bus (FX8): 0 to +5 (warm — affects ch2-7 vocals to both FOH and livestream)
 
 ## Session Workflow
 

@@ -352,6 +352,11 @@ Then send all 4 EQ agents in one message:
    python scripts/control.py --batch /tmp/metering_changes.json
    ```
 4. Log every change: parameter, old value, new value.
+5. If any trim changes were applied, update meter peaks in the capture so subsequent iterations see accurate signal levels:
+   ```bash
+   python scripts/update_peaks.py <capture_file> <ch:dB> [ch:dB ...]
+   ```
+   Calculate each offset as `new_trim_dB - old_trim_dB` from the agent's suggestion (agents provide both raw and human-readable dB equivalents). Example: `python scripts/update_peaks.py captures/session_XXX.json 5:+3.0 17:-2.0`
 
 **Stage 2: EQ batch** (after EQ agents return):
 1. Collect EQ agent suggestions (HPF, EQ bands, FX tone).
@@ -436,6 +441,8 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 **Inactive channels**: Skip channels marked inactive in the extract, but list them in your response so the editor can flag them if musicians start playing. If your focus list includes channels not in the extract, note them as inactive.
 
+**Preamp trim goal**: The engineer wants all faders near unity (0.75 raw / 0 dB) so faders are free for on-the-fly artistic moves. If a channel's effective fader (accounting for DCA) is significantly above or below unity, suggest a preamp trim adjustment to compensate. **Skip channels with a `meter_issue`** (flagged hot/quiet) — the engineer handles those manually. Only suggest trim tweaks for channels that are active, not flagged, but have faders more than ~3dB off unity. Small moves — nudge the trim, don't overhaul it. Preamp trim is 0.0-1.0 raw, linear mapping to the X32's trim range. The OSC address is `/ch/XX/preamp/trim`, controlled via `--gain-trim` in control.py. If you suggest a trim change, account for that shift when evaluating the compressor threshold on the same channel.
+
 **Compressor ratio uses an index, not the actual ratio.** Map: 0=1.1:1, 1=1.3:1, 2=1.5:1, 3=2:1, 4=2.5:1, 5=3:1, 6=4:1, 7=5:1, 8=7:1, 9=10:1, 10=20:1, 11=100:1. Return the index as the raw value. See `docs/TECHNICAL.md` for full conversion tables.
 
 **Return format**: For each channel — number, label, parameter, current raw OSC value, suggested raw OSC value, human-readable equivalent (dB/Hz/ratio), reasoning. The editor needs raw values for batch files. If a channel looks good, say so. Don't suggest changes for the sake of it.
@@ -450,7 +457,7 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 For each active vocal channel:
-1. **Preamp/gain staging** — Compare peak meter level to other active vocals. Adjust preamp so fader sits near unity (accounting for DCA). Fader near max = needs more preamp; near floor = too much.
+1. **Preamp/gain staging** — Goal: fader at unity. If fader is above unity, trim is too hot (reduce it). If fader is below unity, trim is too low (increase it). Calculate the offset: effective fader dB minus 0 dB = how far off. Nudge trim to close that gap. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). If it should be active but is disabled, suggest enabling first. Threshold just below quietest useful signal. Gentle range for vocals (not full gate).
 3. **Compressor** — Check if enabled (`on` field). Compare signal level to threshold. Always squeezing = threshold too low. Never engaging = too high. Ratio 2:1-5:1. Mix 100% unless parallel compression is intentional. Adjust makeup gain if changing threshold/ratio.
 4. **Reverb sends** — Check sends to bus 15 (AudVerb/FOH reverb) and bus 16 (CamVerb/livestream reverb) in the channel's `sends` data.
@@ -477,7 +484,7 @@ For each active vocal channel:
 - Overheads (spaced pair — L near hi-hats, R near ride): comp 2:1-5:1, NO gate
 
 For each active drum channel:
-1. **Preamp/gain staging** — Compare peak to other drums. Fader near unity (accounting for DCA).
+1. **Preamp/gain staging** — Goal: fader at unity. If fader is above unity, trim is too hot (reduce it). If fader is below unity, trim is too low (increase it). Nudge trim to close the gap. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). Enable for close mics if disabled. Full gate for close mics. Threshold below quietest hit. No gate on overheads.
 3. **Compressor** — Check if enabled (`on` field). Tame transients without killing punch. Faster attack for toms/kick, medium snare, gentler overheads.
 4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
@@ -501,7 +508,7 @@ For each active drum channel:
 **Notes:** See `docs/CHANNELS.md` for source details. Key: piano low/high is NOT a stereo pair — it's a string split (affects gain staging).
 
 For each active instrument channel:
-1. **Preamp/gain staging** — Compare to peers of same type. Fader near unity (accounting for DCA).
+1. **Preamp/gain staging** — Goal: fader at unity. If fader is above unity, trim is too hot (reduce it). If fader is below unity, trim is too low (increase it). Nudge trim to close the gap. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). Generally not needed. Only if bleed is a problem.
 3. **Compressor** — Check if enabled (`on` field). Ratio 2:1-5:1 most instruments. Bass 3:1-10:1. Piano 2:1-4:1.
 4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.

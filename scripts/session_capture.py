@@ -38,6 +38,21 @@ from common import (
 METER_CHANNEL_PRE = 0
 INACTIVE_THRESHOLD_RAW = 0.0005
 
+# On/off queries need more retries — the mixer drops ~46% of individual responses,
+# and defaulting to 0 (off) causes false negatives (compressor/HPF/gate/EQ reported
+# as off when actually on). 10 retries gives <0.05% failure rate.
+ON_OFF_RETRIES = 10
+ON_OFF_DELAY = 0.1
+
+
+async def reliable_on_off_query(mixer, address: str, label: str = "") -> Optional[int]:
+    """Query an on/off parameter with extra retries and warning on failure."""
+    val = await reliable_query(mixer, address, retries=ON_OFF_RETRIES, delay=ON_OFF_DELAY)
+    if val is None:
+        print(f"  WARNING: {label or address} returned None after {ON_OFF_RETRIES} retries — defaulting to OFF (may be wrong)", file=sys.stderr)
+        return 0
+    return val
+
 # FX type names (index -> name)
 # NOTE: Some names may be inaccurate. The X32 FX numbering varies by firmware
 # and slot type (insert vs send). Names for types 45-50 are gaps in the official
@@ -108,7 +123,7 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
         link_addr = f'/config/chlink/{ch_num}-{ch_num+1}'
     else:  # Even channel - check link with previous
         link_addr = f'/config/chlink/{ch_num-1}-{ch_num}'
-    stereo_linked = await reliable_query(mixer, link_addr, default=0) == 1
+    stereo_linked = await reliable_on_off_query(mixer, link_addr, label=f"ch{ch_num} stereo link") == 1
 
     settings = {
         "name": get_state_value(state, ch_addr, "config_name", ""),
@@ -120,15 +135,15 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
     }
 
     # Preamp (phantom intentionally NOT queried — headamp queries may have side effects)
-    hpf_val = await reliable_query(mixer, f'{ch_addr}/preamp/hpf', default=0.0)
+    hpf_val = await reliable_query(mixer, f'{ch_addr}/preamp/hpf', default=0.0, retries=ON_OFF_RETRIES, delay=ON_OFF_DELAY)
     settings["preamp"] = {
         "gain": round(await reliable_query(mixer, f'{ch_addr}/preamp/trim', default=0.5), 3),
-        "hpf_on": await reliable_query(mixer, f'{ch_addr}/preamp/hpon', default=0) == 1,
+        "hpf_on": await reliable_on_off_query(mixer, f'{ch_addr}/preamp/hpon', f'ch{ch_num:02d} HPF on') == 1,
         "hpf_hz": hpf_value_to_hz(hpf_val) if hpf_val is not None else 20,
     }
 
     # EQ (omit band details when EQ is off)
-    eq_on = await reliable_query(mixer, f'{ch_addr}/eq/on', default=0) == 1
+    eq_on = await reliable_on_off_query(mixer, f'{ch_addr}/eq/on', f'ch{ch_num:02d} EQ on') == 1
     if eq_on:
         eq_bands = []
         for band in range(1, 5):
@@ -143,7 +158,7 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
         settings["eq"] = {"on": False}
 
     # Gate (omit details when off)
-    gate_on = await reliable_query(mixer, f'{ch_addr}/gate/on', default=0) == 1
+    gate_on = await reliable_on_off_query(mixer, f'{ch_addr}/gate/on', f'ch{ch_num:02d} gate on') == 1
     if gate_on:
         settings["gate"] = {
             "on": True,
@@ -156,7 +171,7 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
         settings["gate"] = {"on": False}
 
     # Compressor (omit details when off)
-    comp_on = await reliable_query(mixer, f'{ch_addr}/dyn/on', default=0) == 1
+    comp_on = await reliable_on_off_query(mixer, f'{ch_addr}/dyn/on', f'ch{ch_num:02d} comp on') == 1
     if comp_on:
         comp_ratio_idx = await reliable_query(mixer, f'{ch_addr}/dyn/ratio', default=5)
         settings["compressor"] = {
@@ -172,7 +187,7 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
         settings["compressor"] = {"on": False}
 
     # Insert
-    insert_on = await reliable_query(mixer, f'{ch_addr}/insert/on', default=0) == 1
+    insert_on = await reliable_on_off_query(mixer, f'{ch_addr}/insert/on', f'ch{ch_num:02d} insert on') == 1
     insert_sel = await reliable_query(mixer, f'{ch_addr}/insert/sel', default=0)
     # Insert sel maps: 0-1=FX1, 2-3=FX2, 4-5=FX3, 6-7=FX4 (L/R pairs)
     settings["insert"] = {
@@ -184,7 +199,7 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
     sends = {}
     for bus_num in range(1, 17):
         level = await reliable_query(mixer, f'{ch_addr}/mix/{bus_num:02d}/level', default=0.0)
-        on = await reliable_query(mixer, f'{ch_addr}/mix/{bus_num:02d}/on', default=0) == 1
+        on = await reliable_on_off_query(mixer, f'{ch_addr}/mix/{bus_num:02d}/on', label=f"ch{ch_num} bus{bus_num:02d} send on") == 1
         if on or (level and level > 0.01):
             sends[f"bus{bus_num:02d}"] = {
                 "level": round(level, 3) if level else 0.0,
@@ -203,7 +218,7 @@ async def capture_channel_settings(mixer, ch_num: int) -> Dict:
     }
 
     # Routing: does this channel feed main LR?
-    st = await reliable_query(mixer, f'{ch_addr}/mix/st', default=0)
+    st = await reliable_on_off_query(mixer, f'{ch_addr}/mix/st', label=f"ch{ch_num} main LR routing")
     settings["routing"] = {
         "main_lr": int(st) == 1 if st is not None else True,
     }
@@ -234,7 +249,7 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
     }
 
     # Bus EQ (6 bands, omit details when off)
-    eq_on = await reliable_query(mixer, f'{bus_addr}/eq/on', default=0) == 1
+    eq_on = await reliable_on_off_query(mixer, f'{bus_addr}/eq/on', f'bus{bus_num:02d} EQ on') == 1
     if eq_on:
         eq_bands = []
         for band in range(1, 7):
@@ -249,7 +264,7 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
         settings["eq"] = {"on": False}
 
     # Bus compressor (omit details when off)
-    comp_on = await reliable_query(mixer, f'{bus_addr}/dyn/on', default=0) == 1
+    comp_on = await reliable_on_off_query(mixer, f'{bus_addr}/dyn/on', f'bus{bus_num:02d} comp on') == 1
     if comp_on:
         comp_ratio_idx = await reliable_query(mixer, f'{bus_addr}/dyn/ratio', default=5)
         settings["compressor"] = {
@@ -265,7 +280,7 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
         settings["compressor"] = {"on": False}
 
     # Bus insert - sel maps: 0-1=FX1, 2-3=FX2, 4-5=FX3, 6-7=FX4 (L/R pairs)
-    insert_on = await reliable_query(mixer, f'{bus_addr}/insert/on', default=0) == 1
+    insert_on = await reliable_on_off_query(mixer, f'{bus_addr}/insert/on', f'bus{bus_num:02d} insert on') == 1
     insert_sel = await reliable_query(mixer, f'{bus_addr}/insert/sel', default=0)
     settings["insert"] = {
         "on": insert_on,
@@ -273,7 +288,7 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
     }
 
     # Routing: does this bus feed main LR?
-    st = await reliable_query(mixer, f'{bus_addr}/mix/st', default=0)
+    st = await reliable_on_off_query(mixer, f'{bus_addr}/mix/st', label=f"bus{bus_num:02d} main LR routing")
     settings["routing"] = {
         "main_lr": int(st) == 1 if st is not None else False,
     }
@@ -282,8 +297,8 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
     matrix_sends = {}
     for mtx_num in range(1, 7):
         level = await reliable_query(mixer, f'{bus_addr}/mix/{mtx_num:02d}/level', default=0.0)
-        on = await reliable_query(mixer, f'{bus_addr}/mix/{mtx_num:02d}/on', default=0)
-        on_val = int(on) == 1 if on is not None else False
+        on = await reliable_on_off_query(mixer, f'{bus_addr}/mix/{mtx_num:02d}/on', label=f"bus{bus_num:02d} mtx{mtx_num:02d} send on")
+        on_val = int(on) == 1
         if on_val or (level is not None and float(level) > 0.01):
             matrix_sends[f"mtx{mtx_num:02d}"] = {
                 "level": round(float(level), 3) if level else 0.0,
@@ -336,7 +351,7 @@ async def capture_main_settings(mixer) -> Dict:
     }
 
     # Main EQ (6 bands)
-    eq_on = await reliable_query(mixer, '/main/st/eq/on', default=0) == 1
+    eq_on = await reliable_on_off_query(mixer, '/main/st/eq/on', 'main EQ on') == 1
     eq_bands = []
     for band in range(1, 7):
         eq_bands.append({
@@ -350,7 +365,7 @@ async def capture_main_settings(mixer) -> Dict:
     # Main compressor
     main_comp_ratio_idx = await reliable_query(mixer, '/main/st/dyn/ratio', default=5)
     settings["compressor"] = {
-        "on": await reliable_query(mixer, '/main/st/dyn/on', default=0) == 1,
+        "on": await reliable_on_off_query(mixer, '/main/st/dyn/on', 'main comp on') == 1,
         "threshold": round(await reliable_query(mixer, '/main/st/dyn/thr', default=0.5), 3),
         "ratio": f"{ratio_index_to_value(int(main_comp_ratio_idx))}:1" if main_comp_ratio_idx is not None else "3:1",
         "attack": round(await reliable_query(mixer, '/main/st/dyn/attack', default=0.5), 3),
@@ -363,8 +378,8 @@ async def capture_main_settings(mixer) -> Dict:
     matrix_sends = {}
     for mtx_num in range(1, 7):
         level = await reliable_query(mixer, f'/main/st/mix/{mtx_num:02d}/level', default=0.0)
-        on = await reliable_query(mixer, f'/main/st/mix/{mtx_num:02d}/on', default=0)
-        on_val = int(on) == 1 if on is not None else False
+        on = await reliable_on_off_query(mixer, f'/main/st/mix/{mtx_num:02d}/on', label=f"main mtx{mtx_num:02d} send on")
+        on_val = int(on) == 1
         if on_val or (level is not None and float(level) > 0.01):
             matrix_sends[f"mtx{mtx_num:02d}"] = {
                 "level": round(float(level), 3) if level else 0.0,
@@ -392,7 +407,7 @@ async def capture_matrix_settings(mixer, mtx_num: int) -> Dict:
     }
 
     # Matrix EQ (6 bands, omit details when off)
-    eq_on = await reliable_query(mixer, f'{mtx_addr}/eq/on', default=0) == 1
+    eq_on = await reliable_on_off_query(mixer, f'{mtx_addr}/eq/on', label=f"mtx{mtx_num} EQ on") == 1
     if eq_on:
         eq_bands = []
         for band in range(1, 7):
@@ -407,7 +422,7 @@ async def capture_matrix_settings(mixer, mtx_num: int) -> Dict:
         settings["eq"] = {"on": False}
 
     # Matrix compressor (omit details when off)
-    mtx_comp_on = await reliable_query(mixer, f'{mtx_addr}/dyn/on', default=0) == 1
+    mtx_comp_on = await reliable_on_off_query(mixer, f'{mtx_addr}/dyn/on', label=f"mtx{mtx_num} comp on") == 1
     if mtx_comp_on:
         mtx_comp_ratio_idx = await reliable_query(mixer, f'{mtx_addr}/dyn/ratio', default=5)
         settings["compressor"] = {
@@ -423,7 +438,7 @@ async def capture_matrix_settings(mixer, mtx_num: int) -> Dict:
         settings["compressor"] = {"on": False}
 
     # Matrix insert
-    insert_on = await reliable_query(mixer, f'{mtx_addr}/insert/on', default=0) == 1
+    insert_on = await reliable_on_off_query(mixer, f'{mtx_addr}/insert/on', label=f"mtx{mtx_num} insert on") == 1
     insert_sel = await reliable_query(mixer, f'{mtx_addr}/insert/sel', default=0)
     settings["insert"] = {
         "on": insert_on,
@@ -449,7 +464,7 @@ async def capture_fxrtn_settings(mixer, fxrtn_num: int) -> Dict:
     }
 
     # EQ (4 bands, omit details when off)
-    eq_on = await reliable_query(mixer, f'{fxrtn_addr}/eq/on', default=0) == 1
+    eq_on = await reliable_on_off_query(mixer, f'{fxrtn_addr}/eq/on', label=f"fxrtn{fxrtn_num} EQ on") == 1
     if eq_on:
         eq_bands = []
         for band in range(1, 5):
@@ -464,7 +479,7 @@ async def capture_fxrtn_settings(mixer, fxrtn_num: int) -> Dict:
         settings["eq"] = {"on": False}
 
     # Routing: main LR send
-    st = await reliable_query(mixer, f'{fxrtn_addr}/mix/st', default=0)
+    st = await reliable_on_off_query(mixer, f'{fxrtn_addr}/mix/st', label=f"fxrtn{fxrtn_num} main LR routing")
     settings["routing"] = {
         "main_lr": int(st) == 1 if st is not None else True,
     }
@@ -473,7 +488,7 @@ async def capture_fxrtn_settings(mixer, fxrtn_num: int) -> Dict:
     sends = {}
     for bus_num in range(1, 17):
         level = await reliable_query(mixer, f'{fxrtn_addr}/mix/{bus_num:02d}/level', default=0.0)
-        bus_on = await reliable_query(mixer, f'{fxrtn_addr}/mix/{bus_num:02d}/on', default=0) == 1
+        bus_on = await reliable_on_off_query(mixer, f'{fxrtn_addr}/mix/{bus_num:02d}/on', label=f"fxrtn{fxrtn_num} bus{bus_num:02d} send on") == 1
         if bus_on or (level and level > 0.01):
             sends[f"bus{bus_num:02d}"] = {
                 "level": round(level, 3) if level else 0.0,
@@ -630,6 +645,7 @@ def analyze_gain_staging(channel_peaks: Dict, channel_names: Dict) -> Dict:
         "active_channels": sorted([int(ch.replace('ch', '')) for ch in active.keys()]),
         "issues": issues,
         "average_peak": round(avg_peak, 6),
+        "channel_peaks": {ch: round(peak, 6) for ch, peak in channel_peaks.items() if peak > 0},
     }
 
 

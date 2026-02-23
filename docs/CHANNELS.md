@@ -37,7 +37,7 @@ Read this when you need detailed info about specific channels, personnel, or sta
 | 28 | Ride | Overhead R | Positioned near ride side |
 | 29-30 | KB-Left/Right | Electric keyboard | Stereo |
 | 31 | Bass | Bass guitar | DI → Ultimo compressor (intentional fuzz) |
-| 32 | Zach-John | Electric guitar | DI → amp plugin |
+| 32 | E-Guitar | Electric guitar | DI → amp plugin |
 
 ## Buses & Groups
 
@@ -50,23 +50,34 @@ Read this when you need detailed info about specific channels, personnel, or sta
 | 4 | Aux | Auxiliary inputs |
 | 5 | Monitors | Monitor sends |
 
-### Subgroup Buses (Expected Routing)
-| Bus | Name | Expected Source Types |
-|-----|------|---------------------|
-| 09 | Vocal | vocal, speaking |
-| 10 | Acoustic | piano, acoustic_guitar, flute, violin |
-| 12 | Drums | kick, snare, rack_tom, floor_tom, overhead |
-| 11 | (unused) | |
-| 13 | Electronic | keys, electric_guitar, bass |
+### FOH Processing Buses
+Vocals (ch2-7) and drums do NOT go directly to main LR. They route through these stereo processing buses with FX inserts first. **Exception:** Tammy (ch1) routes directly to main LR (`st=1`) with her own exciter (FX4 channel insert) — she is NOT in the Voices bus.
 
-These route to the livestream matrices (Cam L / Cam R) only, not to mains. All four subgroup buses should feed both livestream matrices.
+| Bus | Name | Sources | FX Insert | Feeds |
+|-----|------|---------|-----------|-------|
+| 05/06 | Voices (L/R) | Vocal ch2-7 (not Tammy) | Stereo Exciter (FX8) | Main LR + Cam L/R matrices |
+| 07/08 | drums (L/R) | Drum channels | Ultimo Compressor (FX5) + Precision Limiter (FX6) | Main LR + Cam L/R matrices |
 
-### Effects
-- **Drum Bus**: Routed to Ultimo compressor plugin
-- **Vocal Bus**: Routed to stereo exciter
-- **Reverb 1**: Auditorium (FOH)
-- **Reverb 2**: Livestream (different decay/mix)
-- **Livestream Matrix**: Separate output with LF compensation
+**Important:** These buses feed both FOH (main LR) and livestream (Cam L/R matrices). Adjusting bus faders, EQ, or FX inserts affects both audiences.
+
+### Livestream Buses
+These feed the livestream matrices (Cam L / Cam R) only, not mains.
+
+| Bus | Name | Source | Notes |
+|-----|------|--------|-------|
+| 09 | Tammy voice | Tammy (ch1) only | Independent lead vocal level for livestream |
+| 10 | Acoustic | piano, acoustic_guitar, flute, violin | Subgroup — on/off routing, no adjustable send levels |
+| 13 | Electronic | keys, electric_guitar, bass | Subgroup — on/off routing, no adjustable send levels |
+
+**Note:** Bus 12 is decommissioned ("Not used"). Drums reach the livestream via FOH processing buses 07/08 instead.
+
+### Other Buses
+| Bus | Name | Purpose |
+|-----|------|---------|
+| 11 | Pres | Presentation (speaking mics → matrices) |
+| 14 | Ambiant | Ambient room mics → livestream matrices |
+| 15 | AudVerb | Auditorium reverb → main LR (FOH) |
+| 16 | CamVerb | Livestream reverb → Cam L/R matrices |
 
 ## Mic Details
 - **Tammy (ch1)**: Sennheiser e945

@@ -95,7 +95,7 @@ mtx01: Mono House (fed from main)
 mtx02: Foyer
 mtx03: Cam L (livestream left)
 mtx04: Cam R (livestream right)
-mtx05: Assisted Listening
+mtx05: Assisted Listening (inactive, ignore)
 mtx06: Computer
 ```
 
@@ -261,9 +261,11 @@ python scripts/query.py --fx 1
 
 ## Known Issues
 
-- **EQ/dynamics on/off queries occasionally wrong**: Some channels report incorrect on/off state. 5-retry approach helps but isn't perfect.
+- **EQ/dynamics on/off queries occasionally wrong**: Fixed Feb 22, 2026. Root cause: `mixer.query()` returns None ~46% of individual calls. With 5 retries, ~2% still fail — defaulting to 0 reports "off" when actually "on". Fix: `reliable_on_off_query()` uses 10 retries (<0.05% failure rate) + stderr warning on failure.
 
 ## Changelog
+
+- **Feb 22, 2026**: Fixed on/off readback reliability — `reliable_on_off_query()` with 10 retries for all toggle parameters (HPF, EQ, gate, comp, insert, routing, bus sends). Reduces false-negative rate from ~2% to <0.05%.
 
 - **Feb 18, 2026**: Fixed meter capture — replaced broken `/batchsubscribe` with `/meters` request-polling; fixed blob parsing from BE int16 to LE float32; updated activity threshold from 500 (int) to 0.0005 (float); fixed `average_peak` int cast to round().
 - **Feb 15, 2026**: Full parameter verification (29/32 pass). Added matrix capture, channel/bus routing, DCA groups, bus→matrix sends, main→matrix sends. New control.py args: --mute/--unmute, --pan, --comp-ratio, --comp-mix, --comp-mgain, --gate-range. New analyze.py checks: livestream routing, DCA coverage, matrix EQ. Documented comp knee (stepped 0-5), matrix/DCA OSC addresses.
