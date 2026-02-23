@@ -89,6 +89,15 @@ def extract_metering(capture, scope_channels):
             "dca_groups": ch_data.get("dca_groups", []),
         }
 
+        # Add reverb sends (bus 15 AudVerb, bus 16 CamVerb) for metering agents
+        all_sends = ch_data.get("sends", {})
+        reverb_sends = {}
+        for bus_key in ("bus15", "bus16"):
+            if bus_key in all_sends:
+                reverb_sends[bus_key] = all_sends[bus_key]
+        if reverb_sends:
+            ch_extract["sends"] = reverb_sends
+
         # Add meter peak for this channel (needed for compressor threshold evaluation)
         ch_peak_key = f"ch{ch_num:02d}"
         if ch_peak_key in meter_info["channel_peaks"]:
