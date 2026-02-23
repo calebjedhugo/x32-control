@@ -66,6 +66,40 @@ python scripts/splice_rta.py /tmp/rta_batch.jsonl captures/session_XXX.json
 ```
 `--append-to` collects RTA results to a JSONL file (one line per channel). `splice_rta.py` merges all results into a capture file and deletes the JSONL temp file.
 
+### Stream Guard (Livestream Mode)
+```bash
+# Full auto — detect stream, monitor peaks, adjust matrix faders:
+python scripts/stream_guard.py --setup-limiter
+
+# Dry-run with any YouTube video (validates pipeline without touching mixer):
+python scripts/stream_guard.py --video-id dQw4w9WgXcQ --dry-run --start-db -20 --interval 5
+
+# Monitor a specific video (skip stream detection):
+python scripts/stream_guard.py --video-id VIDEO_ID --setup-limiter
+
+# Watch status in another terminal:
+watch -n 1 'cat /tmp/stream_guard_status.json | python3 -m json.tool'
+```
+
+**Options:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--channel-url URL` | config.json | YouTube `/streams` page URL |
+| `--video-id ID` | (auto-detect) | Skip detection, monitor specific video |
+| `--start-db DB` | -30 | Starting fader level in dB |
+| `--target-dbtp DB` | -1.0 | Target peak ceiling |
+| `--step-db DB` | 1.0 | Creep increment |
+| `--interval SECS` | 30 | Seconds between adjustments |
+| `--poll-interval SECS` | 60 | Stream detection poll interval |
+| `--status-file PATH` | /tmp/stream_guard_status.json | Status output |
+| `--pause-file PATH` | /tmp/stream_guard_pause | Pause signal file |
+| `--dry-run` | — | Monitor YouTube without touching mixer |
+| `--setup-limiter` | — | Configure mtx 03/04 compressor as brick-wall limiter |
+
+**Owns**: `/mtx/03/mix/fader`, `/mtx/04/mix/fader` (exclusively during operation).
+**Pause/resume**: Create `/tmp/stream_guard_pause` to pause fader adjustments (continues reading peaks). Remove file to resume.
+**Dependencies**: `yt-dlp`, `ffmpeg` (system-wide).
+
 ### Other Commands
 | Command | Description |
 |---------|-------------|
@@ -114,6 +148,7 @@ For raw control: `python scripts/control.py <address> <value>` (positional args,
 - `scripts/control.py` - Modify parameters (supports `--batch` for bulk changes)
 - `scripts/extract.py` - Extract scoped data from session captures
 - `scripts/splice_rta.py` - Merge batch RTA data into session capture
+- `scripts/stream_guard.py` - YouTube livestream true-peak monitor + matrix fader control
 - `scripts/snapshot.py` - Full state dump
 
 ## Config
@@ -121,7 +156,8 @@ For raw control: `python scripts/control.py <address> <value>` (positional args,
 ```json
 {
   "mixer_ip": "192.168.x.x",
-  "mixer_port": 10023
+  "mixer_port": 10023,
+  "youtube_channel_url": "https://www.youtube.com/@channel/streams"
 }
 ```
 

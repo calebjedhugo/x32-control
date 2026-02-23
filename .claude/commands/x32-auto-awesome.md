@@ -10,14 +10,14 @@ You are the **Session Orchestrator**. You persist for the entire session, keep h
 - Section name → **Focused audit** on that group
 - `ch:N` or channel label → **Focused audit** on that channel
 
-**Focused mode follows the full signal path.** Scoping to "drums" doesn't mean just drum channels — it means every stage the drums pass through: channels → drum bus (compressor, EQ) → main bus → livestream matrices. The target narrows *which sources* you're optimizing, not *how deep* you go.
+**Focused mode follows the full signal path.** Scoping to "drums" doesn't mean just drum channels — it means every stage the drums pass through: channels → FOH processing bus (07/08, FX inserts) → main bus + Cam L/R matrices. The target narrows *which sources* you're optimizing, not *how deep* you go.
 
 **Section mappings** (channel numbers from `docs/CHANNELS.md` — verify if assignments change):
 | Argument | Channels | Signal Path |
 |----------|----------|-------------|
-| `vocals` | 1-7 | ch→main (FOH) + ch→Vocal bus (09)→matrices (livestream) |
-| `speaking` | 8-9 | ch→main (FOH) + ch→Vocal bus (09)→matrices (livestream) |
-| `drums` | 22-28 | ch→Drums bus (12)→matrices (livestream). Bus does NOT feed main. |
+| `vocals` | 1-7 | Tammy (ch1): ch→main (FOH, FX4 insert) + ch→Tammy bus (09)→matrices. Others (ch2-7): ch→Voices bus (05/06, FX8 insert)→main + matrices |
+| `speaking` | 8-9 | ch→Voices bus (05/06, FX insert)→main (FOH) + matrices (livestream) |
+| `drums` | 22-28 | ch→drums bus (07/08, FX insert)→main (FOH) + matrices (livestream) |
 | `instruments` | 17-21, 29-32 | ch→main (FOH) + ch→Acoustic (10)/Electronic (13)→matrices |
 | `piano` | 17-18 | ch→main (FOH) + ch→Acoustic bus (10)→matrices |
 | `keys` or `keyboard` | 29-30 | ch→main (FOH) + ch→Electronic bus (13)→matrices |
@@ -26,6 +26,12 @@ You are the **Session Orchestrator**. You persist for the entire session, keep h
 | `flute` | 21 | ch→main (FOH) + ch→Acoustic bus (10)→matrices |
 | `livestream` | Buses + matrices | Downstream only — no channel changes |
 
+**FOH processing buses** also feed livestream. Vocals (ch2-7) and drums do NOT go directly to main LR (`st=0`). **Exception:** Tammy (ch1) routes directly to main (`st=1`) with her own exciter (FX4 insert) — she is NOT in the Voices bus. She has a dedicated livestream bus (09 "Tammy voice") for independent level control.
+- **Bus 05/06 "Voices"**: Stereo Exciter (FX8) insert → main LR + Cam L/R matrices
+- **Bus 07/08 "drums"**: Ultimo Compressor (FX5) + Precision Limiter (FX6) inserts → main LR + Cam L/R matrices
+- **Bus 09 "Tammy voice"**: Tammy only → Cam L/R matrices (not mains)
+- **Bus 12**: Decommissioned ("Not used"). Drums reach livestream via buses 07/08.
+
 ## Setup
 
 ```bash
@@ -33,6 +39,35 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 ```
 
 Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRECTIONS.md` (if it exists).
+
+### Stream Guard (livestream mode only)
+
+When `$ARGUMENTS` is `livestream`:
+
+1. Clean stale files:
+   ```bash
+   rm -f /tmp/stream_guard_status.json /tmp/stream_guard_pause
+   ```
+2. Spawn stream guard as a **background Task agent** that runs:
+   ```bash
+   cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate && python scripts/stream_guard.py --setup-limiter
+   ```
+3. Track `stream_guard_active: true` in session state.
+
+**Polling stream guard status** — check `/tmp/stream_guard_status.json` before/after each editor pass and while idle. Relay state transitions to the engineer:
+
+| State | Tell the engineer |
+|-------|-------------------|
+| `waiting` | "Stream guard is watching for the livestream..." |
+| `connecting` | "Stream detected — connecting to audio..." |
+| `monitoring` | "Adjusting levels — fader at X dB, peaks at Y dBTP" |
+| `settled` | "Levels locked in at X dB, peaks at Y dBTP" |
+| `backing_off` | "Backed off to X dB — peaks were too hot" |
+| `stream_ended` | "Stream ended. Guard returning to watch mode." |
+
+Check the `errors` array in the status JSON — if non-empty, relay: "Stream guard error: [message]. Retrying..."
+
+Do NOT relay: every minor adjustment, paused/resumed, heartbeats with no change.
 
 ---
 
@@ -143,6 +178,9 @@ When the engineer wraps up:
    - Vocal bus fader: Claude set -6dB, engineer raised to -4dB (pattern: Claude underestimates vocals)
    - Kick EQ 60Hz boost: +3dB, engineer left as-is
    ```
+6. If stream guard was active (`stream_guard_active` in session state):
+   - Read final `/tmp/stream_guard_status.json` — report final fader position, peak levels, total adjustments made
+   - Clean up: `rm -f /tmp/stream_guard_status.json /tmp/stream_guard_pause`
 
 ### RTA Gathering Agent
 
@@ -219,8 +257,14 @@ Read `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, and `docs/TECHNICAL.md` from you
 **IMPORTANT:** Do NOT run individual `control.py` commands. Collect all changes into a JSON file and execute once:
 
 ```bash
+# If stream guard is active, pause it before batch:
+[ -f /tmp/stream_guard_status.json ] && touch /tmp/stream_guard_pause && sleep 2
+
 # Write changes to a batch file, then execute in one connection:
 python scripts/control.py --batch /tmp/mix_changes.json
+
+# Resume stream guard after batch:
+rm -f /tmp/stream_guard_pause
 ```
 
 Batch file format (array of raw OSC address/value pairs — all values 0.0-1.0 normalized):
@@ -285,10 +329,10 @@ TIMEOUT=600; ELAPSED=0; while [ ! -f /tmp/rta_ready ] && [ $ELAPSED -lt $TIMEOUT
 if [ ! -f /tmp/rta_ready ]; then echo "RTA TIMEOUT — proceeding without RTA data"; fi
 ```
 Then send all 4 EQ agents in one message:
-4. Vocals EQ agent — `extract.py --scope eq` (focus: ch1-9, bus 09, exciters)
-5. Drums EQ agent — `extract.py --scope eq` (focus: ch22-28, bus 12)
+4. Vocals EQ agent — `extract.py --scope eq` (focus: ch1-9, bus 05/06, bus 09, exciters)
+5. Drums EQ agent — `extract.py --scope eq` (focus: ch22-28, bus 07/08)
 6. Instruments EQ agent — `extract.py --scope eq` (focus: ch17-21, 29-32, bus 10, 13, amp sim)
-7. Downstream EQ agent — `extract.py --scope eq` (focus: main, matrices, remaining buses)
+7. Downstream EQ agent — `extract.py --scope eq` (focus: main, matrices, buses 10, 13, 14, 15, 16)
 
 **Focused mode** — dispatch only agents relevant to the target:
 - Target section's metering + EQ agents (e.g., drums → drums metering + drums EQ)
@@ -400,7 +444,7 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 ### Vocals Metering Agent
 
-**Scope**: Preamp + dynamics for active vocal channels. Nothing else.
+**Scope**: Preamp + dynamics + reverb sends for active vocal channels.
 
 **Data:** `python scripts/extract.py --scope metering-vocals <capture_file>`
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
@@ -409,12 +453,18 @@ For each active vocal channel:
 1. **Preamp/gain staging** — Compare peak meter level to other active vocals. Adjust preamp so fader sits near unity (accounting for DCA). Fader near max = needs more preamp; near floor = too much.
 2. **Gate** — Check if enabled (`on` field). If it should be active but is disabled, suggest enabling first. Threshold just below quietest useful signal. Gentle range for vocals (not full gate).
 3. **Compressor** — Check if enabled (`on` field). Compare signal level to threshold. Always squeezing = threshold too low. Never engaging = too high. Ratio 2:1-5:1. Mix 100% unless parallel compression is intentional. Adjust makeup gain if changing threshold/ratio.
+4. **Reverb sends** — Check sends to bus 15 (AudVerb/FOH reverb) and bus 16 (CamVerb/livestream reverb) in the channel's `sends` data.
+   - Both should be `on: true` for vocals. If off, flag it.
+   - Lead vocal (Tammy) typically gets moderate reverb. BGVs can have slightly more to push them back in the mix.
+   - AudVerb and CamVerb send levels should be similar per channel unless intentionally different.
+   - Compare across all vocal channels — levels should be relatively consistent unless a voice needs to sit further forward/back.
+   - OSC address: `/ch/XX/mix/15/level` (AudVerb), `/ch/XX/mix/16/level` (CamVerb)
 
 ---
 
 ### Drums Metering Agent
 
-**Scope**: Preamp + dynamics for active drum channels. Nothing else.
+**Scope**: Preamp + dynamics + reverb sends for active drum channels.
 
 **Data:** `python scripts/extract.py --scope metering-drums <capture_file>`
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
@@ -430,12 +480,20 @@ For each active drum channel:
 1. **Preamp/gain staging** — Compare peak to other drums. Fader near unity (accounting for DCA).
 2. **Gate** — Check if enabled (`on` field). Enable for close mics if disabled. Full gate for close mics. Threshold below quietest hit. No gate on overheads.
 3. **Compressor** — Check if enabled (`on` field). Tame transients without killing punch. Faster attack for toms/kick, medium snare, gentler overheads.
+4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
+   - Drums generally need less reverb than vocals. Too much muddies transients.
+   - Kick: little to no reverb (keeps it tight and punchy).
+   - Snare: moderate reverb (adds body and sustain).
+   - Toms: light-to-moderate reverb (helps sustain without washing out).
+   - Overheads: little to no direct send — they already capture room ambience.
+   - CamVerb sends may differ from AudVerb since the livestream has no natural room sound.
+   - OSC address: `/ch/XX/mix/15/level` (AudVerb), `/ch/XX/mix/16/level` (CamVerb)
 
 ---
 
 ### Instruments Metering Agent
 
-**Scope**: Preamp + dynamics for active instrument channels. Nothing else.
+**Scope**: Preamp + dynamics + reverb sends for active instrument channels.
 
 **Data:** `python scripts/extract.py --scope metering-instruments <capture_file>`
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
@@ -446,6 +504,15 @@ For each active instrument channel:
 1. **Preamp/gain staging** — Compare to peers of same type. Fader near unity (accounting for DCA).
 2. **Gate** — Check if enabled (`on` field). Generally not needed. Only if bleed is a problem.
 3. **Compressor** — Check if enabled (`on` field). Ratio 2:1-5:1 most instruments. Bass 3:1-10:1. Piano 2:1-4:1.
+4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
+   - Piano: moderate reverb (adds space and sustain, especially for grand piano).
+   - Acoustic guitar: light-to-moderate reverb.
+   - Flute: moderate reverb (helps blend and adds air).
+   - Keys: light reverb (often has built-in effects already).
+   - Bass: little to no reverb (keeps low end tight and defined).
+   - Electric guitar: light reverb (amp sim already adds character).
+   - CamVerb sends may differ from AudVerb since the livestream has no natural room sound.
+   - OSC address: `/ch/XX/mix/15/level` (AudVerb), `/ch/XX/mix/16/level` (CamVerb)
 
 ---
 
@@ -472,33 +539,38 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 ### Vocals EQ Agent
 
-**Scope**: EQ + HPF for vocal channels (ch1-9) and vocal bus (09). Also evaluates exciter FX tone.
+**Scope**: EQ + HPF for vocal channels (ch1-9), Tammy voice bus (09), and Voices FOH bus (05/06). Also evaluates exciter FX tone.
 
-**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch01-ch09, bus09, FX exciters
+**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch01-ch09, bus05, bus06, bus09, FX exciters
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
+**Signal path context:** Tammy (ch1) routes directly to main LR (`st=1`) with FX4 exciter as channel insert — she is NOT in the Voices bus. Other vocals (ch2-7) route through Voices bus (05/06) with FX8 exciter to both main LR and Cam L/R matrices. Tammy has a dedicated livestream bus (09 "Tammy voice") for independent matrix send level.
+
 **Work order:**
-1. **Exciter tone** — Check FX4 (Tammy exciter) and FX8 (BGV exciter) timbre:
-   - Tammy: target +10 to +15 (Timbre High par/08, Dual Exciter). OSC 0.6-0.65.
-   - BGVs: target 0 to +5. Check FX8's `type_name` in the extract: if "Dual Exciter" use par/08 (Timbre High), if "Stereo Exciter" use par/04 (Timbre). OSC 0.5-0.55.
+1. **Exciter tone** — Two exciters affect vocals:
+   - **FX4 (Tammy exciter)**: Insert on Tammy's channel. Affects both FOH and livestream. Dual Exciter. Target Timbre High (par/08) +10 to +15. OSC 0.6-0.65.
+   - **FX8 (Voices FOH bus insert)**: Insert on bus 05/06 — processes vocals ch2-7 going to FOH AND livestream (bus feeds both main LR and Cam L/R matrices). Check `type_name` in extract: if "Dual Exciter" use par/08 (Timbre High), if "Stereo Exciter" use par/04 (Timbre). Target 0 to +5 (warm, not bright — it affects every voice except Tammy). OSC 0.5-0.55.
    - Formula: `osc_value = (timbre + 50) / 100`
 2. **Channel HPF** — On for all vocals. Alto: 120-150Hz. Baritone: 80-100Hz. Tenor: 100-120Hz.
 3. **Channel EQ** — Use RTA data. Gentle presence boosts only (stacked boosts across singers cause harshness). Lead vocal gets priority for presence range.
-4. **Vocal bus EQ** — Shape the group. Complement channel EQ, don't duplicate.
+4. **Tammy voice bus EQ** (bus 09) — Shapes Tammy for livestream only. Complement her channel EQ and FX4 exciter.
+5. **Voices FOH bus EQ** (bus 05/06) — Shapes ch2-7 vocals for both FOH and livestream. Complement channel EQ and FX8 exciter — don't duplicate.
 
 ---
 
 ### Drums EQ Agent
 
-**Scope**: EQ + HPF for drum channels (ch22-28) and drum bus (12).
+**Scope**: EQ + HPF for drum channels (ch22-28) and drums FOH bus (07/08).
 
-**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch22-ch28, bus12
+**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch22-ch28, bus07, bus08
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
+
+**Signal path context:** Drum channels route through FOH processing buses 07/08 (with FX5 Ultimo Compressor + FX6 Precision Limiter inserts). These buses feed both main LR and Cam L/R matrices — EQ changes affect both FOH and livestream. Bus 12 is decommissioned.
 
 **Work order:**
 1. **Channel HPF** — On for all drums except kick. Snare: 80-100Hz. Toms: 60-80Hz. Overheads (ch27 Hi-hats, ch28 Ride): 80-120Hz — these are spaced-pair overhead mics positioned near cymbals, NOT dedicated cymbal close-mics. Keep full drum kit frequency range.
 2. **Channel EQ** — Use RTA data. Kick: sub punch (50-80Hz), click (2-5kHz). Snare: body (200Hz), crack (2-4kHz). Toms: fundamental + attack. Overheads: air, reduce bleed.
-3. **Drum bus EQ** — Glue the kit. Complement channel EQ.
+3. **Drums FOH bus EQ** (bus 07/08) — Glue the kit. Complement channel EQ. Changes affect both FOH and livestream.
 
 ---
 
@@ -524,10 +596,12 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 ### Downstream EQ Agent
 
-**Scope**: Main bus EQ, matrix EQ (livestream + house), and any buses not covered by section agents (ambient, CamVerb, monitors).
+**Scope**: Main bus EQ, matrix EQ (livestream + house), and remaining buses not covered by section agents (ambient, CamVerb, AudVerb, Acoustic 10, Electronic 13).
 
-**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not in {09, 10, 12, 13}
+**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not in {05, 06, 07, 08, 09}
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
+
+**Note:** FOH processing bus EQ (Voices 05/06, drums 07/08) is now handled by the Vocals EQ and Drums EQ agents respectively. Tammy voice bus (09) is handled by Vocals EQ agent. Bus 12 is decommissioned.
 
 **Work order:**
 1. **Main bus EQ** — Respect existing room corrections (LF shelf cuts, HF presence cut). Only suggest changes if something is clearly wrong or fighting upstream corrections. Check VENUE.md for known room problems.
@@ -535,28 +609,38 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
    - Cam L/R (mtx03/04): livestream. Phone speakers can't reproduce sub-bass — boost upper harmonics (80-200Hz) instead. Tame sibilance (5-8kHz). Slight presence lift for vocal intelligibility.
    - Mono House (mtx01): room PA supplement. Similar to main but mono-compatible.
    - Foyer (mtx02): background listening. Roll off lows, gentle presence.
-   - Assisted Listening (mtx05): clarity-first. Boost speech frequencies (1-4kHz), reduce low end.
-3. **Remaining bus EQ** — Ambient bus, CamVerb, etc. Shape for their purpose (reverb return EQ should complement, not duplicate, channel reverb sends).
+   - Assisted Listening (mtx05): inactive, skip.
+3. **Livestream bus EQ** — Acoustic bus (10), Electronic bus (13). Shape for livestream matrices.
+4. **Remaining bus EQ** — Ambient bus, CamVerb, AudVerb. Shape for their purpose (reverb return EQ should complement, not duplicate, channel reverb sends).
 
 ---
 
 ### Bus Dynamics Agent
 
-**Scope**: Bus compressors and master compressor. No channel-level or EQ work.
+**Scope**: Bus compressors, FOH bus FX insert dynamics (Ultimo/Limiter), and master compressor. No channel-level or EQ work.
 
 **Data:** `python scripts/extract.py --scope dynamics <capture_file>`
+**Also query:** `python scripts/query.py --fx 5 --fx 6` for drum FOH bus insert parameters
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Work order:**
-1. **Subgroup bus compressors** (Vocal 09, Acoustic 10, Drums 12, Electronic 13):
+1. **Drum FOH bus FX inserts** (bus 07/08):
+   - **FX5 — Ultimo Compressor** (type 17): Insert on bus 07 (drums L). This is the primary drum dynamics processing for FOH. Evaluate input gain, attack, release, output gain, ratio. See TECHNICAL.md for Ultimo parameter mapping. Tame transients without killing punch — drums need attack to cut through.
+   - **FX6 — Precision Limiter** (type 11): Insert on bus 08 (drums R). Evaluate input/output gain, squeeze, knee, attack, release. Should catch peaks, not constantly limiting.
+   - These two should work together coherently (one compresses, one limits). If the built-in bus compressor on 07/08 is also enabled, check for over-processing — three stages of dynamics is likely too much.
+2. **FOH processing bus compressors** (Voices 05/06, drums 07/08):
+   - Voices (05/06): last dynamics stage before mains for vocals. Has Stereo Exciter (FX8) insert but that's tonal, not dynamics — compressor here is independent.
+   - drums (07/08): already has Ultimo + Limiter inserts (step 1). Built-in bus compressor may not be needed. Only enable if the FX inserts aren't providing enough control.
+3. **Livestream bus compressors** (Tammy voice 09, Acoustic 10, Electronic 13):
    - Glue each group. Threshold should engage on peaks, not constant squeeze.
-   - Compare approach across buses — drums typically need faster attack than vocals.
+   - Bus 09 is Tammy only — compressor here shapes her livestream dynamics independently.
+   - Bus 12 is decommissioned. Drums reach livestream via FOH buses 07/08 (step 1/2).
    - Check ratio, attack, release, knee, makeup gain.
-2. **Master compressor**:
+4. **Master compressor**:
    - Gentle, catching peaks. Not slamming.
    - If gain reduction would be constant (threshold well below expected signal), threshold is too low.
 
-**Focused mode**: Only evaluate the target's bus compressor. Note main compressor state but only suggest changes if clearly wrong.
+**Focused mode**: Only evaluate the target's bus compressor and relevant FX inserts. Note main compressor state but only suggest changes if clearly wrong.
 
 ---
 
@@ -570,14 +654,26 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 The engineer can't hear the livestream from the room — optimize by the numbers.
 
 **Signal path** — Trace every path to livestream matrices (Cam L / Cam R):
-- Channels → subgroup buses (Vocal, Drums, Acoustic, Electronic) → matrices
-- Channels → main LR → matrices
-- Ambient mics → matrices
-- Reverb return (CamVerb — verify bus number from capture) → matrices
+- Voices FOH bus (05/06) → matrices (vocals ch2-7, with FX8 exciter)
+- drums FOH bus (07/08) → matrices (drums, with FX5/FX6 processing)
+- Tammy voice bus (09) → matrices (Tammy only, independent level)
+- Acoustic bus (10) → matrices (piano, acoustic guitar, flute, violin)
+- Electronic bus (13) → matrices (keys, electric guitar, bass)
+- Ambient bus (14) → matrices (room mics)
+- CamVerb bus (16) → matrices (livestream reverb)
+- Main LR → matrices: **OFF** (main does not feed livestream)
 
 **Work order:**
-1. **Send level balance** — Read each bus's fader level and its current send level to Cam L/R. Target vocal bus 3-6dB above instrument buses at the matrix input for intelligibility. Adjust send levels, not bus faders (bus faders affect all downstream sends, not just livestream matrices).
-2. **Matrix compressors** — Tighter than FOH. Broadcast needs consistent levels.
+1. **Send level balance** — Read each bus's fader level and its current send level to Cam L/R. Target vocal buses (05/06 + 09) 3-6dB above instrument buses at the matrix input for intelligibility. Adjust send levels, not bus faders (bus faders for 05/06 and 07/08 also affect FOH). Bus 09 "Tammy voice" is livestream-only — its fader and send levels can be adjusted freely without affecting FOH.
+2. **Matrix compressors / limiters** —
+
+   **When stream guard is active (`/tmp/stream_guard_status.json` exists):**
+   - **Do NOT suggest changes to `/mtx/03/mix/fader` or `/mtx/04/mix/fader`.** These are exclusively managed by the stream guard based on measured YouTube output.
+   - **Verify the limiter settings** on mtx 03/04 compressors. The stream guard configures these as brick-wall limiters at session start. Confirm they are still set correctly: ratio=100:1 (index 11), fast attack (0.0), hard knee (index 0), mix=100%, makeup gain=0. If any setting has drifted, flag it and suggest restoring it. You MAY suggest threshold changes — threshold is the one limiter parameter the stream guard does not own.
+   - Continue evaluating: bus→matrix send levels, matrix EQ (Downstream EQ agent's domain).
+
+   **When stream guard is NOT active:** Tighter than FOH. Broadcast needs consistent levels. Evaluate matrix compressors freely.
+
 3. **Balance for two audiences** — phone speakers AND home theaters:
    - Vocal intelligibility first
    - Low end via upper harmonics (80-200Hz) — phones can't do sub-bass
