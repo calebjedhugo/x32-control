@@ -40,6 +40,26 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRECTIONS.md` (if it exists).
 
+### Startup Reminder: Metering Baseline Calibration
+
+**DELETE THIS ENTIRE SECTION** once targets are documented in `docs/VENUE.md`.
+
+**Tell the engineer at startup:** "Reminder — we need to establish meter peak/average targets this session. Make sure the master fader is at unity before the first capture so we get a clean baseline."
+
+**After the first capture with musicians playing:**
+
+1. Read `channel_peaks` from the capture's `analysis.gain_staging` — it should now be populated for all active channels.
+2. If `channel_peaks` is empty, something is still wrong with the capture code — tell the engineer.
+3. If populated, group peaks by section (vocals ch1-7, drums ch22-28, instruments ch17-21/29-32) and compute per-group averages and ranges.
+4. Report the numbers to the engineer: "Here's what I'm seeing — vocals averaging X, drums Y, instruments Z. Does this look like a representative mix?"
+5. Once the engineer confirms, add a `## Metering Targets` section to `docs/VENUE.md` with:
+   - Per-group target peak ranges (raw + dB) for vocals, drums, instruments
+   - Overall average peak baseline
+   - Note: "Captured with master at unity, YYYY-MM-DD"
+6. Delete this entire `### Startup Reminder: Metering Baseline Calibration` section from this file.
+
+**Future state:** Once targets exist in `docs/VENUE.md`, metering agents should aim for those target peak ranges instead of the current fader-at-unity heuristic. Trim adjustments should bring channel peaks into the target range for their group, rather than adjusting trim to get faders near 0 dB.
+
 ### Stream Guard (livestream mode only)
 
 When `$ARGUMENTS` is `livestream`:
