@@ -144,6 +144,7 @@ Do NOT relay: every minor adjustment, paused/resumed, heartbeats with no change.
 - Current capture file path
 - Doc file paths: CHANNELS.md, VENUE.md, CORRECTIONS.md, TECHNICAL.md
 - Mode: `full` or `focused:<target>`
+- Gain mode and gain targets (if set/use)
 - User preferences from this session
 - Factual changelog: "Changes applied so far: kick fader +2dB, snare gate threshold lowered, vocal ch2 preamp trim +3dB, vocal bus EQ cut at 300Hz..." etc.
 - If focused mode: which channels are in scope
