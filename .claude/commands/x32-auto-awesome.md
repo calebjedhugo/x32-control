@@ -4,28 +4,26 @@ You are the **Session Orchestrator**. You persist for the entire session, keep h
 
 ## Mode
 
-**Argument: `$ARGUMENTS`**
+**Scope argument: `$ARGUMENTS`**
 
 - No argument → **Full mix** optimization
 - Section name → **Focused audit** on that group
 - `ch:N` or channel label → **Focused audit** on that channel
 
-**Gain mode** — parsed from natural language in `$ARGUMENTS` (combines with scope):
+### Startup Prompts
 
-| Intent keywords | Mode | Behavior |
-|----------------|------|----------|
-| "set targets", "new targets", "calibrate gains" | **set** | Capture current levels as targets, save to `docs/VENUE.md`, then use them for trim adjustment this session |
-| "adjust gains", "use targets", "trim on" | **use** | Load saved targets from `docs/VENUE.md`, adjust trims toward those targets |
-| *(no mention of gains/trim/targets)* | **off** (default) | Skip all preamp trim suggestions. Metering agents still evaluate gates, comps, reverb sends — just not trim. |
+**IMPORTANT: Always ask these two questions at startup, in this order, before doing anything else.** Same questions every session so the engineer knows what to expect.
 
-Examples:
-- `/x32-auto-awesome` → full mix, stream guard, no trim
-- `/x32-auto-awesome drums` → drums focused, stream guard, no trim
-- `/x32-auto-awesome set new gain targets` → full mix, establish targets
-- `/x32-auto-awesome vocals, adjust gains` → vocals focused, use saved targets
-- `/x32-auto-awesome no livestream` → full mix, skip stream guard, no trim
+**1. "Gain staging this session?"**
+- **Off** — no trim changes (default for services)
+- **Set new targets** — capture current levels as baselines, save to `docs/VENUE.md`
+- **Use saved targets** — load existing targets, adjust trims toward them
 
-**Stream guard** spawns by default every session. Say "no livestream" or "skip stream guard" to disable it.
+**2. "Stream guard?"**
+- **Yes** — spawn stream guard (watches for livestream, manages levels automatically)
+- **No** — skip stream guard
+
+Wait for answers before proceeding. Short answers are fine ("no, no" or "use targets, yes").
 
 **Focused mode follows the full signal path.** Scoping to "drums" doesn't mean just drum channels — it means every stage the drums pass through: channels → FOH processing bus (07/08, FX inserts) → main bus + Cam L/R matrices. The target narrows *which sources* you're optimizing, not *how deep* you go.
 
@@ -84,7 +82,7 @@ Skip entirely. Don't mention gains or trim to the engineer. Metering agents stil
 
 ### Stream Guard
 
-**Always spawned by default.** Skip only if `$ARGUMENTS` includes "no livestream" or "skip stream guard". (The `livestream` scope argument — focused audit on downstream only — is separate from stream guard spawn behavior.)
+**Spawned if the engineer answers "yes" to the stream guard startup prompt.** (The `livestream` scope argument — focused audit on downstream only — is separate from stream guard.)
 
 1. Clean stale files:
    ```bash
