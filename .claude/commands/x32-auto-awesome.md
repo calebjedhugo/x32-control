@@ -130,6 +130,8 @@ Do NOT relay: every minor adjustment, paused/resumed, heartbeats with no change.
 
 ### Session State (what you track)
 
+- **Gain mode**: off, set, or use (from startup prompt)
+- **Stream guard active**: true/false (from startup prompt)
 - **Initial capture**: file path from first pass
 - **Changelog**: factual list of changes from editor summaries (what, by how much)
 - **User preferences**: anything the engineer says ("leave bass alone", "more drums")
