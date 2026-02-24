@@ -145,7 +145,7 @@ Do NOT relay: every minor adjustment, paused/resumed, heartbeats with no change.
 - Doc file paths: CHANNELS.md, VENUE.md, CORRECTIONS.md, TECHNICAL.md
 - Mode: `full` or `focused:<target>`
 - User preferences from this session
-- Factual changelog: "Changes applied so far: kick fader +2dB, snare gate threshold lowered, vocal bus EQ cut at 300Hz..." etc.
+- Factual changelog: "Changes applied so far: kick fader +2dB, snare gate threshold lowered, vocal ch2 preamp trim +3dB, vocal bus EQ cut at 300Hz..." etc.
 - If focused mode: which channels are in scope
 
 **NEVER include:**
@@ -353,7 +353,7 @@ Common OSC addresses (replace XX with zero-padded number):
 
 **Dispatch subagents using the Task tool (subagent_type: `general-purpose`).** Each agent runs its own `extract.py` command — you do NOT read data for them. **Send ALL Task calls in a single message so they run in parallel.**
 
-Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subagent Prompt Templates section below) + capture file path.
+Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subagent Prompt Templates section below) + context brief data (gain mode, gain targets if set/use, active channels) + capture file path.
 
 **Two-phase dispatch** — check the context brief's **RTA status** field:
 
@@ -390,7 +390,7 @@ Then send all 4 EQ agents in one message:
 
 **Stage 1: Metering batch** (as soon as metering agents return — don't wait for EQ):
 
-1. Collect metering agent suggestions (gates, compressors, reverb sends — and preamp trim if gain mode is set/use).
+1. Collect metering agent suggestions (gates, compressors, reverb sends — and preamp trim if gain mode is set/use). **If gain mode is off, discard any trim suggestions.**
 2. Deconflict contradictory suggestions between metering agents for overlapping channels.
 3. Write to batch file and apply:
    ```bash
@@ -422,7 +422,7 @@ Then send all 4 EQ agents in one message:
    cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl && python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
    If `/tmp/rta_batch_backup.jsonl` doesn't exist (RTA was unavailable), skip this step — EQ agents will note missing RTA data.
-3. **Dispatch all 7 subagents in parallel** with the new capture path. Never reuse a subagent from a previous pass.
+3. Assemble updated context brief (same gain mode, updated changelog from Phase 2). **Dispatch all 7 subagents in parallel** with updated context brief + new capture path. Never reuse a subagent from a previous pass.
 4. If new subagents return actionable suggestions, deconflict and apply via batch.
 5. **Repeat until converged** (no new actionable suggestions) or iteration cap:
    - Full mix mode: **max 4 iterations**
@@ -486,7 +486,7 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 **Inactive channels**: Skip channels marked inactive in the extract, but list them in your response so the editor can flag them if musicians start playing. If your focus list includes channels not in the extract, note them as inactive.
 
-**Preamp trim** — behavior depends on the **gain mode** in the context brief:
+**Preamp trim** — behavior depends on the **gain mode** provided in your prompt (from the context brief). If gain mode is not specified, assume **off**.
 
 - **Gain mode: off** → Do NOT suggest preamp trim changes. Skip the gain staging evaluation entirely. Still evaluate gates, compressors, and reverb sends as normal.
 - **Gain mode: set or use** → Target peak ranges are in the context brief. Adjust trim to bring channel peaks into the target range for their group. **Skip channels with a `meter_issue`** (flagged hot/quiet) — the engineer handles those manually. Only suggest trim tweaks for channels that are active, not flagged, and whose peaks fall outside the target range. Small moves — nudge the trim, don't overhaul it. Preamp trim is 0.0-1.0 raw, linear mapping to the X32's trim range. The OSC address is `/ch/XX/preamp/trim`, controlled via `--gain-trim` in control.py. If you suggest a trim change, account for that shift when evaluating the compressor threshold on the same channel.
