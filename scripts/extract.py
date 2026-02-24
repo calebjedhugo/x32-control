@@ -98,6 +98,11 @@ def extract_metering(capture, scope_channels):
         if reverb_sends:
             ch_extract["sends"] = reverb_sends
 
+        # Add channel insert info (needed for FX insert evaluation)
+        insert_data = ch_data.get("insert", {})
+        if insert_data and insert_data.get("on"):
+            ch_extract["insert"] = insert_data
+
         # Add meter peak for this channel (needed for compressor threshold evaluation)
         ch_peak_key = f"ch{ch_num:02d}"
         if ch_peak_key in meter_info["channel_peaks"]:
@@ -110,6 +115,30 @@ def extract_metering(capture, scope_channels):
             ch_extract["meter_detail"] = issue.get("detail")
 
         result["channels"][ch_key] = ch_extract
+
+    # Include FX data for slots that are inserted on channels in this scope
+    fx_routing = capture.get("analysis", {}).get("fx_routing", {})
+    for fx_key, fx_data in capture.get("fx", {}).items():
+        routing = fx_routing.get(fx_key, {})
+        inserted_on = routing.get("inserted_on") or []
+        for target in inserted_on:
+            if target.get("type") == "channel":
+                ch_id = target.get("id", "")
+                ch_num_str = ch_id.replace("ch", "")
+                try:
+                    if int(ch_num_str) in scope_channels:
+                        if "fx" not in result:
+                            result["fx"] = {}
+                        params = fx_data.get("parameters", {})
+                        clean_params = {k: v for k, v in params.items()
+                                        if v is not None and (not isinstance(v, float) or v == v)}
+                        result["fx"][fx_key] = {
+                            "type_name": fx_data.get("type_name", ""),
+                            "parameters": clean_params,
+                            "inserted_on": target,
+                        }
+                except ValueError:
+                    pass
 
     return result
 

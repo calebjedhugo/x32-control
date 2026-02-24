@@ -43,7 +43,10 @@ If something fails or data looks wrong:
 
 | FX Slot | Effect | Routed to |
 |---------|--------|-----------|
-| FX 4 | Exciter | Tammy only (channel insert) |
+| FX 1 | Ultimo Compressor | Bass (ch31) channel insert — tonal fuzz, not dynamics |
+| FX 2 | Hall Reverb (CamVerb) | Bus 16 send → fxrtn02 → livestream matrices |
+| FX 3 | Hall Reverb (AudVerb) | Bus 15 send → fxrtn03 → main LR (FOH) |
+| FX 4 | Dual Exciter | Tammy only (channel insert) |
 | FX 5 | Ultimo Compressor | Drums FOH bus 07 (insert) |
 | FX 6 | Precision Limiter | Drums FOH bus 08 (insert) |
 | FX 7 | Amp Sim | Electric guitar (ch32) |

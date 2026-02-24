@@ -178,7 +178,20 @@ Do NOT relay: every minor adjustment, paused/resumed, heartbeats with no change.
 1. Clean up stale files: `rm -f /tmp/rta_batch_quick.jsonl /tmp/rta_batch_retry.jsonl /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl /tmp/rta_quick_done /tmp/rta_retry_done /tmp/rta_ready`
 2. Start **RTA gathering agent** immediately (Task agent, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
 3. Run capture in parallel: `python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
-4. Capture done → get active channel list: `python scripts/extract.py --scope editor <capture_file>` — extract only the `active_channels` array from the JSON output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
+4. Capture done → **routing verification** then active channel list:
+   a. Extract the `fx_routing` and channel insert data from the capture: `python scripts/extract.py --scope editor <capture_file>` — check `fx_routing` in the output.
+   b. Cross-check against the expected FX routing table (from `CLAUDE.md`):
+      - FX1: Ultimo Compressor → Bass (ch31) channel insert (tonal fuzz)
+      - FX2: Hall Reverb (CamVerb) → bus 16 send/return (no insert)
+      - FX3: Hall Reverb (AudVerb) → bus 15 send/return (no insert)
+      - FX4: Dual Exciter → Tammy (ch01) channel insert
+      - FX5: Ultimo Compressor → Drums FOH bus 07 insert
+      - FX6: Precision Limiter → Drums FOH bus 08 insert
+      - FX7: Amp Sim → Electric guitar (ch32) channel insert
+      - FX8: Stereo Exciter → Voices FOH bus 05/06 insert
+   c. **If any mismatch** (wrong insert target, missing insert, wrong FX type): **STOP and alert the engineer** before proceeding. Example: "FX1 is inserted on John (ch03) but should be on Bass (ch31) — fix on the board before I continue?"
+   d. Also verify key routing flags: Tammy ch1 `st=1` (direct to main), vocals ch2-7 `st=0` (via Voices bus only), drums ch22-28 `st=0` (via drums bus only).
+   e. Extract `active_channels` from the same output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
 5. Assemble context brief with **RTA status: pending**
 6. Spawn **editor** (Task agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
 7. Poll for quick pass to finish (5 min timeout):
@@ -562,7 +575,8 @@ For each active instrument channel:
 1. **Preamp/gain staging** — **If gain mode is off, skip this step.** If gain targets are provided, compare the channel's current peak to the target range for instruments; nudge trim to bring it in range. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). Generally not needed. Only if bleed is a problem.
 3. **Compressor** — Check if enabled (`on` field). Ratio 2:1-5:1 most instruments. Bass 3:1-10:1. Piano 2:1-4:1.
-4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
+4. **Bass fuzz tone (FX1 — Ultimo Compressor)** — Bass (ch31) uses an Ultimo Compressor as a channel insert for **tonal effect, not dynamics**. Extreme settings give the bass a fuzzy, driven edge. Check the `insert` field on ch31 — it should show `on: true, fx_slot: 1`. If the insert is off or on the wrong channel, flag it. Evaluate FX1 parameters in the `fx` section of the extract data (see `docs/TECHNICAL.md` for Ultimo parameter mapping). Use the bass `meter_peak` to judge how hard the signal is driving the Ultimo (more level = more saturation/fuzz). Does it give the bass presence and grit without muddying the low end? Complement the bass channel EQ and respect the bass/kick frequency lane separation. OSC: `/fx/1/par/XX`.
+5. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
    - Piano: moderate reverb (adds space and sustain, especially for grand piano).
    - Acoustic guitar: light-to-moderate reverb.
    - Flute: moderate reverb (helps blend and adds air).
@@ -654,7 +668,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 ### Downstream EQ Agent
 
-**Scope**: Main bus EQ, matrix EQ (livestream + house), and remaining buses not covered by section agents (ambient, CamVerb, AudVerb, Acoustic 10, Electronic 13).
+**Scope**: Main bus EQ, matrix EQ (livestream + house), remaining buses not covered by section agents (ambient, CamVerb, AudVerb, Acoustic 10, Electronic 13), and **reverb FX engine parameters** (FX2 CamVerb, FX3 AudVerb).
 
 **Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not in {05, 06, 07, 08, 09}
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
@@ -670,6 +684,11 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
    - Assisted Listening (mtx05): inactive, skip.
 3. **Livestream bus EQ** — Acoustic bus (10), Electronic bus (13). Shape for livestream matrices.
 4. **Remaining bus EQ** — Ambient bus, CamVerb, AudVerb. Shape for their purpose (reverb return EQ should complement, not duplicate, channel reverb sends).
+5. **Reverb FX parameters** — Evaluate the Hall Reverb engine settings for both reverb FX slots. Parameters are in the `fx` section of the extract data. See `docs/TECHNICAL.md` for Hall Reverb parameter mapping (par/01-12).
+   - **FX3 — AudVerb** (bus 15 → FX3, fxrtn03 → main LR): FOH reverb. Should complement the room acoustics — check VENUE.md for room character. Decay and size should match the room (too long washes out speech intelligibility, too short sounds dry). Damping should tame high-frequency buildup. Pre-delay helps preserve vocal clarity.
+   - **FX2 — CamVerb** (bus 16 → FX2, fxrtn02 → livestream matrices): Livestream reverb. Livestream has NO natural room sound, so this reverb creates the entire sense of space. Can be slightly longer/wetter than AudVerb. Higher diffusion smooths out the tail for headphone/speaker listeners. Hi-cut can be lower than AudVerb since livestream doesn't need air frequencies to fill a room.
+   - **Relationship**: CamVerb and AudVerb serve different audiences. Don't assume they should match — the room already adds reverb to FOH, so AudVerb supplements while CamVerb creates from scratch.
+   - OSC addresses: `/fx/2/par/XX` (CamVerb), `/fx/3/par/XX` (AudVerb). Values are 0.0-1.0 normalized.
 
 ---
 
