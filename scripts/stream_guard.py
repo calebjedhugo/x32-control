@@ -8,7 +8,7 @@ Usage:
 
     --channel-url URL      YouTube streams page URL (default: from config.json)
     --video-id ID          Skip detection, monitor this specific video
-    --start-db DB          Starting fader level in dB (default: -30)
+    --start-db DB          Fallback fader level in dB if mixer can't be read (default: -30)
     --target-dbtp DB       Target peak ceiling (default: -1.0)
     --step-db DB           Creep increment (default: 1.0)
     --interval SECS        Seconds between adjustments (default: 30)
@@ -124,6 +124,14 @@ class FaderController:
 
         peak = self.recent_peak
 
+        # When settled: only respond to actual clipping
+        if self.settled:
+            if peak >= 0.0:
+                new_db = max(self.current_db - 0.5, -90.0)
+                self.cooldown_until = now + 60.0
+                return new_db, f"CLIP GUARD -0.5dB (peak {peak:+.1f} dBTP)"
+            return None, "settled"
+
         # BACK OFF: clipping
         if peak >= 0.0:
             new_db = max(self.current_db - 2.0, -90.0)
@@ -238,6 +246,16 @@ class MixerInterface:
         await self.set_matrix_fader(3, fader_val)
         await asyncio.sleep(0.05)
         await self.set_matrix_fader(4, fader_val)
+
+    async def read_matrix_fader_db(self) -> float | None:
+        """Read current matrix 03 fader level in dB. Returns None in dry-run."""
+        if self.dry_run or not self.mixer:
+            return None
+        result = await self.mixer.query("/mtx/03/mix/fader")
+        if result is None:
+            return None
+        fader_val = result[0] if isinstance(result, (list, tuple)) else result
+        return fader_to_db(float(fader_val))
 
     async def setup_limiter(self):
         """Configure mtx 03/04 compressors as brick-wall limiters."""
@@ -448,7 +466,17 @@ class StreamGuard:
             if self.args.setup_limiter:
                 await self.mixer.setup_limiter()
 
-            # Set initial fader position
+            # Read current fader position from mixer
+            actual_db = await self.mixer.read_matrix_fader_db()
+            if actual_db is not None:
+                self.fader.current_db = actual_db
+                print(f"[guard] Read fader from mixer: {actual_db:+.1f} dB",
+                      file=sys.stderr)
+            else:
+                print(f"[guard] Using start-db: {self.fader.current_db:+.1f} dB",
+                      file=sys.stderr)
+
+            # Set fader to confirmed position (ensures both mtx 03/04 match)
             await self.mixer.set_both_matrix_faders(self.fader.current_db)
             print(f"[guard] Initial fader: {self.fader.current_db:+.1f} dB",
                   file=sys.stderr)
@@ -655,7 +683,7 @@ def main():
     )
     parser.add_argument(
         "--start-db", type=float, default=-30.0,
-        help="Starting fader level in dB (default: -30)"
+        help="Fallback fader level in dB if mixer can't be read (default: -30)"
     )
     parser.add_argument(
         "--target-dbtp", type=float, default=-1.0,
