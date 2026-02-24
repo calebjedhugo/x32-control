@@ -10,6 +10,23 @@ You are the **Session Orchestrator**. You persist for the entire session, keep h
 - Section name → **Focused audit** on that group
 - `ch:N` or channel label → **Focused audit** on that channel
 
+**Gain mode** — parsed from natural language in `$ARGUMENTS` (combines with scope):
+
+| Intent keywords | Mode | Behavior |
+|----------------|------|----------|
+| "set targets", "new targets", "calibrate gains" | **set** | Capture current levels as targets, save to `docs/VENUE.md`, then use them for trim adjustment this session |
+| "adjust gains", "use targets", "trim on" | **use** | Load saved targets from `docs/VENUE.md`, adjust trims toward those targets |
+| *(no mention of gains/trim/targets)* | **off** (default) | Skip all preamp trim suggestions. Metering agents still evaluate gates, comps, reverb sends — just not trim. |
+
+Examples:
+- `/x32-auto-awesome` → full mix, stream guard, no trim
+- `/x32-auto-awesome drums` → drums focused, stream guard, no trim
+- `/x32-auto-awesome set new gain targets` → full mix, establish targets
+- `/x32-auto-awesome vocals, adjust gains` → vocals focused, use saved targets
+- `/x32-auto-awesome no livestream` → full mix, skip stream guard, no trim
+
+**Stream guard** spawns by default every session. Say "no livestream" or "skip stream guard" to disable it.
+
 **Focused mode follows the full signal path.** Scoping to "drums" doesn't mean just drum channels — it means every stage the drums pass through: channels → FOH processing bus (07/08, FX inserts) → main bus + Cam L/R matrices. The target narrows *which sources* you're optimizing, not *how deep* you go.
 
 **Section mappings** (channel numbers from `docs/CHANNELS.md` — verify if assignments change):
@@ -40,29 +57,34 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRECTIONS.md` (if it exists).
 
-### Startup Reminder: Metering Baseline Calibration
+### Gain Target Workflow
 
-**DELETE THIS ENTIRE SECTION** once targets are documented in `docs/VENUE.md`.
+#### Gain mode: set
 
-**Tell the engineer at startup:** "Reminder — we need to establish meter peak/average targets this session. Make sure the master fader is at unity before the first capture so we get a clean baseline."
+After the first capture with musicians playing:
 
-**After the first capture with musicians playing:**
-
-1. Read `channel_peaks` from the capture's `analysis.gain_staging` — it should now be populated for all active channels.
-2. If `channel_peaks` is empty, something is still wrong with the capture code — tell the engineer.
-3. If populated, group peaks by section (vocals ch1-7, drums ch22-28, instruments ch17-21/29-32) and compute per-group averages and ranges.
-4. Report the numbers to the engineer: "Here's what I'm seeing — vocals averaging X, drums Y, instruments Z. Does this look like a representative mix?"
-5. Once the engineer confirms, add a `## Metering Targets` section to `docs/VENUE.md` with:
+1. Read `channel_peaks` from the capture's `analysis.gain_staging`. If empty, tell the engineer and ask if they want to try another capture.
+2. Group peaks by section (vocals ch1-7, drums ch22-28, instruments ch17-21/29-32) and compute per-group averages and ranges.
+3. Report to the engineer: "Here's what I'm seeing — vocals averaging X, drums Y, instruments Z. Does this look like a representative mix?"
+4. Once the engineer confirms, save to `docs/VENUE.md` under `## Metering Targets`:
    - Per-group target peak ranges (raw + dB) for vocals, drums, instruments
    - Overall average peak baseline
    - Note: "Captured with master at unity, YYYY-MM-DD"
-6. Delete this entire `### Startup Reminder: Metering Baseline Calibration` section from this file.
+5. Use the newly saved targets for trim adjustment for the rest of this session (behaves like **use** mode from this point forward).
 
-**Future state:** Once targets exist in `docs/VENUE.md`, metering agents should aim for those target peak ranges instead of the current fader-at-unity heuristic. Trim adjustments should bring channel peaks into the target range for their group, rather than adjusting trim to get faders near 0 dB.
+#### Gain mode: use
 
-### Stream Guard (livestream mode only)
+1. Load targets from the `## Metering Targets` section in `docs/VENUE.md`.
+2. If targets don't exist, tell the engineer: "No saved gain targets found. Want me to set targets now?" If yes, switch to **set** mode. If no, fall back to **off** mode.
+3. Include the loaded target data in the context brief so metering agents have it.
 
-When `$ARGUMENTS` is `livestream`:
+#### Gain mode: off (default)
+
+Skip entirely. Don't mention gains or trim to the engineer. Metering agents still evaluate gates, compressors, and reverb sends as normal.
+
+### Stream Guard
+
+**Always spawned by default.** Skip only if `$ARGUMENTS` includes "no livestream" or "skip stream guard". (The `livestream` scope argument — focused audit on downstream only — is separate from stream guard spawn behavior.)
 
 1. Clean stale files:
    ```bash
@@ -141,6 +163,8 @@ Do NOT relay: every minor adjustment, paused/resumed, heartbeats with no change.
 **Active channels**: [list from extract.py --scope editor output]
 **Docs**: docs/CHANNELS.md, docs/VENUE.md, docs/CORRECTIONS.md, docs/TECHNICAL.md (value conversions)
 **Mode**: full | focused:<target> (channels: N-M)
+**Gain mode**: off | set | use
+**Gain targets**: [if set or use: per-group target peak ranges from VENUE.md. Omit if off.]
 **RTA status**: present in capture | pending (poll /tmp/rta_ready) | not available
 **User preferences**: [list or "none yet"]
 **Changelog**: [factual list of changes applied so far, or "first pass"]
@@ -365,14 +389,15 @@ Then send all 4 EQ agents in one message:
 **Two-stage apply** — metering changes go to the mixer first, EQ changes follow when ready.
 
 **Stage 1: Metering batch** (as soon as metering agents return — don't wait for EQ):
-1. Collect metering agent suggestions (preamp, gates, compressors).
+
+1. Collect metering agent suggestions (gates, compressors, reverb sends — and preamp trim if gain mode is set/use).
 2. Deconflict contradictory suggestions between metering agents for overlapping channels.
 3. Write to batch file and apply:
    ```bash
    python scripts/control.py --batch /tmp/metering_changes.json
    ```
 4. Log every change: parameter, old value, new value.
-5. If any trim changes were applied, update meter peaks in the capture so subsequent iterations see accurate signal levels:
+5. **(Gain mode set/use only)** If any trim changes were applied, update meter peaks in the capture so subsequent iterations see accurate signal levels:
    ```bash
    python scripts/update_peaks.py <capture_file> <ch:dB> [ch:dB ...]
    ```
@@ -461,7 +486,12 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 **Inactive channels**: Skip channels marked inactive in the extract, but list them in your response so the editor can flag them if musicians start playing. If your focus list includes channels not in the extract, note them as inactive.
 
-**Preamp trim goal**: The engineer wants all faders near unity (0.75 raw / 0 dB) so faders are free for on-the-fly artistic moves. If a channel's effective fader (accounting for DCA) is significantly above or below unity, suggest a preamp trim adjustment to compensate. **Skip channels with a `meter_issue`** (flagged hot/quiet) — the engineer handles those manually. Only suggest trim tweaks for channels that are active, not flagged, but have faders more than ~3dB off unity. Small moves — nudge the trim, don't overhaul it. Preamp trim is 0.0-1.0 raw, linear mapping to the X32's trim range. The OSC address is `/ch/XX/preamp/trim`, controlled via `--gain-trim` in control.py. If you suggest a trim change, account for that shift when evaluating the compressor threshold on the same channel.
+**Preamp trim** — behavior depends on the **gain mode** in the context brief:
+
+- **Gain mode: off** → Do NOT suggest preamp trim changes. Skip the gain staging evaluation entirely. Still evaluate gates, compressors, and reverb sends as normal.
+- **Gain mode: set or use** → Target peak ranges are in the context brief. Adjust trim to bring channel peaks into the target range for their group. **Skip channels with a `meter_issue`** (flagged hot/quiet) — the engineer handles those manually. Only suggest trim tweaks for channels that are active, not flagged, and whose peaks fall outside the target range. Small moves — nudge the trim, don't overhaul it. Preamp trim is 0.0-1.0 raw, linear mapping to the X32's trim range. The OSC address is `/ch/XX/preamp/trim`, controlled via `--gain-trim` in control.py. If you suggest a trim change, account for that shift when evaluating the compressor threshold on the same channel.
+
+**Compressor threshold evaluation is always active regardless of gain mode.** If you suggest a trim change (gain mode set/use), account for the resulting signal level shift when evaluating the compressor threshold.
 
 **Compressor ratio uses an index, not the actual ratio.** Map: 0=1.1:1, 1=1.3:1, 2=1.5:1, 3=2:1, 4=2.5:1, 5=3:1, 6=4:1, 7=5:1, 8=7:1, 9=10:1, 10=20:1, 11=100:1. Return the index as the raw value. See `docs/TECHNICAL.md` for full conversion tables.
 
@@ -477,7 +507,7 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 For each active vocal channel:
-1. **Preamp/gain staging** — Goal: fader at unity. If fader is above unity, trim is too hot (reduce it). If fader is below unity, trim is too low (increase it). Calculate the offset: effective fader dB minus 0 dB = how far off. Nudge trim to close that gap. Skip channels with `meter_issue` — the engineer handles those.
+1. **Preamp/gain staging** — **If gain mode is off, skip this step.** If gain targets are provided, compare the channel's current peak to the target range for vocals; nudge trim to bring it in range. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). If it should be active but is disabled, suggest enabling first. Threshold just below quietest useful signal. Gentle range for vocals (not full gate).
 3. **Compressor** — Check if enabled (`on` field). Compare signal level to threshold. Always squeezing = threshold too low. Never engaging = too high. Ratio 2:1-5:1. Mix 100% unless parallel compression is intentional. Adjust makeup gain if changing threshold/ratio.
 4. **Reverb sends** — Check sends to bus 15 (AudVerb/FOH reverb) and bus 16 (CamVerb/livestream reverb) in the channel's `sends` data.
@@ -504,7 +534,7 @@ For each active vocal channel:
 - Overheads (spaced pair — L near hi-hats, R near ride): comp 2:1-5:1, NO gate
 
 For each active drum channel:
-1. **Preamp/gain staging** — Goal: fader at unity. If fader is above unity, trim is too hot (reduce it). If fader is below unity, trim is too low (increase it). Nudge trim to close the gap. Skip channels with `meter_issue` — the engineer handles those.
+1. **Preamp/gain staging** — **If gain mode is off, skip this step.** If gain targets are provided, compare the channel's current peak to the target range for drums; nudge trim to bring it in range. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). Enable for close mics if disabled. Full gate for close mics. Threshold below quietest hit. No gate on overheads.
 3. **Compressor** — Check if enabled (`on` field). Tame transients without killing punch. Faster attack for toms/kick, medium snare, gentler overheads.
 4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
@@ -528,7 +558,7 @@ For each active drum channel:
 **Notes:** See `docs/CHANNELS.md` for source details. Key: piano low/high is NOT a stereo pair — it's a string split (affects gain staging).
 
 For each active instrument channel:
-1. **Preamp/gain staging** — Goal: fader at unity. If fader is above unity, trim is too hot (reduce it). If fader is below unity, trim is too low (increase it). Nudge trim to close the gap. Skip channels with `meter_issue` — the engineer handles those.
+1. **Preamp/gain staging** — **If gain mode is off, skip this step.** If gain targets are provided, compare the channel's current peak to the target range for instruments; nudge trim to bring it in range. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). Generally not needed. Only if bleed is a problem.
 3. **Compressor** — Check if enabled (`on` field). Ratio 2:1-5:1 most instruments. Bass 3:1-10:1. Piano 2:1-4:1.
 4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
