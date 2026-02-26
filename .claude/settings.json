@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scripts/session_capture.py *)",
+      "Bash(python scripts/control.py *)",
+      "Bash(python scripts/rta_listen.py *)",
+      "Bash(python scripts/analyze.py *)",
+      "Bash(python scripts/diff_sessions.py *)",
+      "Bash(python scripts/query.py *)",
+      "Bash(python scripts/extract.py *)",
+      "Bash(python scripts/splice_rta.py *)",
+      "Bash(python scripts/update_peaks.py *)",
+      "Bash(python scripts/capture.py *)",
+      "Bash(python scripts/snapshot.py *)",
+      "Bash(cd *x32-control* && source venv/bin/activate && python scripts/*)",
+      "Bash(rm -f /tmp/rta_*)",
+      "Bash(rm -f /tmp/mix_changes*)",
+      "Bash(rm -f /tmp/metering_changes*)",
+      "Bash(rm -f /tmp/eq_changes*)",
+      "Bash(rm -f /tmp/upstream_changes*)",
+      "Bash(cp /tmp/rta_*)",
+      "Bash(touch /tmp/rta_*)",
+      "Bash(cat /tmp/rta_*)",
+      "Bash(TIMEOUT=*)",
+      "Write(captures/changelog_*)",
+      "Edit(captures/changelog_*)"
+    ]
+  }
+}

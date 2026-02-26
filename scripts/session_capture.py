@@ -320,7 +320,8 @@ async def capture_bus_settings(mixer, bus_num: int) -> Dict:
 async def capture_fx_settings(mixer, fx_num: int) -> Dict:
     """Capture settings for an FX slot."""
     fx_type_idx = await reliable_query(mixer, f'/fx/{fx_num}/type', default=0)
-    fx_type_idx = int(fx_type_idx) if fx_type_idx else 0
+    import math
+    fx_type_idx = int(fx_type_idx) if fx_type_idx and not (isinstance(fx_type_idx, float) and math.isnan(fx_type_idx)) else 0
 
     settings = {
         "type_id": fx_type_idx,

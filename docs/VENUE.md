@@ -24,6 +24,7 @@ Read this when discussing room acoustics, PA issues, or mix strategy.
 | Booth doesn't match congregation | Booth rear-left, PA at front | Trust meters, not ears at booth |
 | Presence/HF harshness | Vaulted wood ceiling reflects 2-5kHz back down | -5.5dB cut at 3.8kHz on main bus |
 | Uneven coverage near column | Center support column blocks/reflects | No fix - seating issue |
+| OSC data corruption | Multiple X32 clients (e.g. X32-Edit on another laptop) | Close all other X32 software before running captures or batch changes |
 
 ## Mix Strategy
 - Master bus has shelf EQ cutting LF for house
@@ -45,3 +46,30 @@ Read this when discussing room acoustics, PA issues, or mix strategy.
 - **Master bus already cuts LF** - don't over-cut on channels; some is handled globally
 - **Bleed matters** - piano bleeds into vocal mics. EQ changes to vocals affect piano bleed too
 - **Livestream gets LF added back** - mix that sounds thin at booth may be perfect for both room and stream
+
+## Metering Targets
+
+Captured with master at unity, 2026-02-25.
+
+### Vocals (ch1-7)
+| Metric | Raw | dB |
+|--------|-----|-----|
+| Target range | 0.082 – 0.258 | -21.7 to -11.8 |
+| Average peak | 0.151 | -16.4 |
+
+### Drums (ch22-28)
+| Metric | Raw | dB |
+|--------|-----|-----|
+| Target range | 0.061 – 0.217 | -24.3 to -13.3 |
+| Average peak | 0.131 | -17.7 |
+
+### Instruments (ch17-21, 29-32)
+| Metric | Raw | dB |
+|--------|-----|-----|
+| Target range | 0.044 – 0.156 | -27.2 to -16.1 |
+| Average peak | 0.076 | -22.4 |
+
+### Overall
+| Metric | Raw | dB |
+|--------|-----|-----|
+| Average peak | 0.119 | -18.5 |
