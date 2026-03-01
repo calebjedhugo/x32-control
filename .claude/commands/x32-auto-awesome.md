@@ -44,6 +44,10 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRECTIONS.md` (if it exists).
 
+### Permission Note
+
+All Bash commands must be run as **individual calls** — never chain with `&&` or `;`. Claude Code's permission patterns match whole command strings, and compound commands fail matching. Run each step as a separate Bash tool call. Use `scripts/poll_file.py` instead of shell `while` loops for file polling.
+
 ### Gain Targets
 
 Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startup. Include the loaded target data in the context brief so metering agents have it. If targets don't exist, tell the engineer and skip trim adjustments for that session.
@@ -133,15 +137,22 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 6. Spawn **editor** (Task agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
 7. Poll for quick pass to finish (5 min timeout):
    ```bash
-   TIMEOUT=300; ELAPSED=0; while [ ! -f /tmp/rta_quick_done ] && [ $ELAPSED -lt $TIMEOUT ]; do sleep 5; ELAPSED=$((ELAPSED+5)); done
+   python scripts/poll_file.py --file /tmp/rta_quick_done --timeout 300
    ```
 8. Back up quick data BEFORE splice (splice deletes source): `cp /tmp/rta_batch_quick.jsonl /tmp/rta_batch_backup.jsonl`
-9. Splice quick data into capture + signal editor: `python scripts/splice_rta.py /tmp/rta_batch_quick.jsonl <capture_file> && touch /tmp/rta_ready` — EQ agents can now start with partial RTA data.
+9. Splice quick data into capture, then signal editor (two separate Bash calls):
+   ```bash
+   python scripts/splice_rta.py /tmp/rta_batch_quick.jsonl <capture_file>
+   ```
+   ```bash
+   touch /tmp/rta_ready
+   ```
+   EQ agents can now start with partial RTA data.
 10. Poll for retry pass to finish (5 min timeout):
     ```bash
-    TIMEOUT=300; ELAPSED=0; while [ ! -f /tmp/rta_retry_done ] && [ $ELAPSED -lt $TIMEOUT ]; do sleep 5; ELAPSED=$((ELAPSED+5)); done
+    python scripts/poll_file.py --file /tmp/rta_retry_done --timeout 300
     ```
-11. If retry data exists, append to backup: `[ -f /tmp/rta_batch_retry.jsonl ] && cat /tmp/rta_batch_retry.jsonl >> /tmp/rta_batch_backup.jsonl`. Do NOT splice retry data into the current capture (editor is already using it). Retry data becomes available on iteration 2+ via the backup.
+11. If retry data exists, append to backup: `cat /tmp/rta_batch_retry.jsonl >> /tmp/rta_batch_backup.jsonl` (if file doesn't exist, command fails harmlessly — continue). Do NOT splice retry data into the current capture (editor is already using it). Retry data becomes available on iteration 2+ via the backup.
 12. Wait for the **editor** to finish.
 13. Clean up: `rm -f /tmp/rta_ready /tmp/rta_quick_done /tmp/rta_retry_done`
 14. Add editor summary to changelog, present to engineer, flag concerns.
@@ -149,9 +160,12 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 **Subsequent passes** — shorter capture, RTA data carried forward:
 
 1. Run capture: `python scripts/session_capture.py --duration 5`
-2. Splice saved RTA data into new capture (copy first since splice deletes its source):
+2. Splice saved RTA data into new capture (copy first since splice deletes its source — two separate Bash calls):
    ```bash
-   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl && python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl
+   ```
+   ```bash
+   python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
 3. Get active channels: `python scripts/extract.py --scope editor <new_capture_file>` — extract only `active_channels`, discard the rest.
 4. Assemble context brief with **RTA status: present in capture**
@@ -309,10 +323,9 @@ Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subag
 
 **Step 2 (only if RTA status is "pending"):** Wait for RTA data, then dispatch EQ agents:
 ```bash
-# Poll with timeout (max 10 minutes). Set timeout: 600000 on the Bash tool call as a hard backstop.
-TIMEOUT=600; ELAPSED=0; while [ ! -f /tmp/rta_ready ] && [ $ELAPSED -lt $TIMEOUT ]; do sleep 5; ELAPSED=$((ELAPSED+5)); done
-if [ ! -f /tmp/rta_ready ]; then echo "RTA TIMEOUT — proceeding without RTA data"; fi
+python scripts/poll_file.py --file /tmp/rta_ready --timeout 600
 ```
+If poll_file.py exits with error (timeout), proceed without RTA data.
 Then send all 4 EQ agents in one message:
 4. Vocals EQ agent — `extract.py --scope eq` (focus: ch1-9, bus 05/06, bus 09, exciters)
 5. Drums EQ agent — `extract.py --scope eq` (focus: ch22-28, bus 07/08)
@@ -364,9 +377,12 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
 ### Phase 3: Iterate
 
 1. Run a new capture: `python scripts/session_capture.py --duration 5`
-2. Splice RTA data into the new capture so EQ agents have frequency data:
+2. Splice RTA data into the new capture so EQ agents have frequency data (two separate Bash calls):
    ```bash
-   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl && python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl
+   ```
+   ```bash
+   python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
    If `/tmp/rta_batch_backup.jsonl` doesn't exist (RTA was unavailable), skip this step — EQ agents will note missing RTA data.
 3. Assemble updated context brief (updated changelog from Phase 2). **Dispatch all 7 subagents in parallel** with updated context brief + new capture path. Never reuse a subagent from a previous pass.
@@ -381,9 +397,12 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
 After channel-level convergence, dispatch upstream subagents for bus/main dynamics and livestream optimization. **Same coordination pattern as Phases 1-2** — you collect suggestions, deconflict, and batch-apply.
 
 1. Run a fresh capture: `python scripts/session_capture.py --duration 5`
-2. If RTA backup exists, splice into new capture:
+2. If RTA backup exists, splice into new capture (two separate Bash calls):
    ```bash
-   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl && python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl
+   ```
+   ```bash
+   python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
 3. **Full mix mode** — dispatch both in parallel:
    - Bus Dynamics agent — `extract.py --scope dynamics`

@@ -10,6 +10,7 @@
       "Bash(python scripts/extract.py *)",
       "Bash(python scripts/splice_rta.py *)",
       "Bash(python scripts/update_peaks.py *)",
+      "Bash(python scripts/poll_file.py *)",
       "Bash(python scripts/capture.py *)",
       "Bash(python scripts/snapshot.py *)",
       "Bash(cd *x32-control* && source venv/bin/activate && python scripts/*)",
