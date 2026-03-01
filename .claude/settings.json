@@ -1,4 +1,7 @@
 {
+  "sandbox": {
+    "enabled": false
+  },
   "permissions": {
     "allow": [
       "Bash(python scripts/session_capture.py *)",
@@ -20,11 +23,18 @@
       "Bash(rm -f /tmp/eq_changes*)",
       "Bash(rm -f /tmp/upstream_changes*)",
       "Bash(cp /tmp/rta_*)",
+      "Bash(cp /tmp/rta_batch_*.jsonl /tmp/rta_batch_*.jsonl)",
       "Bash(touch /tmp/rta_*)",
       "Bash(cat /tmp/rta_*)",
+      "Bash(cat /tmp/rta_batch_*.jsonl >> /tmp/rta_batch_*.jsonl)",
       "Bash(TIMEOUT=*)",
-      "Write(captures/changelog_*)",
-      "Edit(captures/changelog_*)"
+      "Write(//tmp/mix_changes*)",
+      "Write(//tmp/metering_changes*)",
+      "Write(//tmp/eq_changes*)",
+      "Write(//tmp/upstream_changes*)",
+      "Write(/captures/*)",
+      "Edit(/captures/*)",
+      "Edit(/docs/CORRECTIONS.md)"
     ]
   }
 }

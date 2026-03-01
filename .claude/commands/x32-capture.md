@@ -4,25 +4,32 @@ Run a comprehensive capture of the X-32 mixer state, then analyze it.
 
 ## Instructions
 
-1. Run the session capture script:
+**IMPORTANT:** Run each command as a separate Bash call — never chain with `&&` or put multiple commands in one call. Working directory persists between calls.
+
+1. Set working directory:
 ```bash
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate && python scripts/session_capture.py --duration 5
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
 ```
 
-2. Read the output JSON file that was created (path shown in script output)
-
-3. Run the analysis engine on the capture (outputs JSON):
+2. Run the session capture script:
 ```bash
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate && python scripts/analyze.py
+venv/bin/python scripts/session_capture.py --duration 5
 ```
 
-4. Parse the analysis JSON. Summarize for the user:
+3. Read the output JSON file that was created (path shown in script output)
+
+4. Run the analysis engine on the capture (outputs JSON):
+```bash
+venv/bin/python scripts/analyze.py
+```
+
+5. Parse the analysis JSON. Summarize for the user:
    - How many channels are active
    - Any **critical** or **warning** findings (group by type: EQ issues, HPF issues, masking conflicts, gain staging)
    - For findings with a `fix` field, tell the user what the fix would do in plain English
    - If there are fixes available, ask: "Want me to apply any of these fixes?"
 
-5. Store the capture path so you can reference it when the user asks about specific channels
+6. Store the capture path so you can reference it when the user asks about specific channels
 
 ## Presenting Findings
 
@@ -49,9 +56,9 @@ For findings WITHOUT a `fix` field (HPF changes, compressor ratio, gain staging)
 
 ## RTA (On-Demand)
 
-When user asks about frequencies, run RTA with **`--update-session`**:
+When user asks about frequencies, run RTA with **`--update-session`** (working directory already set from step 1):
 ```bash
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate && python scripts/rta_listen.py --channel 26 --update-session
+venv/bin/python scripts/rta_listen.py --channel 26 --update-session
 ```
 
 ## Data Freshness

@@ -39,14 +39,20 @@ You are the **Session Orchestrator**. You persist for the entire session, keep h
 ## Setup
 
 ```bash
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
 ```
 
 Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRECTIONS.md` (if it exists).
 
 ### Permission Note
 
-All Bash commands must be run as **individual calls** — never chain with `&&` or `;`. Claude Code's permission patterns match whole command strings, and compound commands fail matching. Run each step as a separate Bash tool call. Use `scripts/poll_file.py` instead of shell `while` loops for file polling.
+All Bash commands must be run as **individual calls** — never chain with `&&` or `;`. Compound commands trigger security checks and fail permission matching.
+
+**Python scripts**: Use `venv/bin/python scripts/...` directly — no `source venv/bin/activate` needed. The first Bash call should `cd` to the project directory (working directory persists across calls), then all subsequent calls use `venv/bin/python scripts/...` as relative paths.
+
+**Shell utilities** (`rm`, `cp`, `touch`, `cat`): Run standalone — never prefix with `cd`. Use `venv/bin/python scripts/poll_file.py` instead of shell `while` loops for file polling.
+
+**Wildcard limitation**: The `*` in permission patterns does NOT match `/` characters. **Always use shell globs** (`rm -f /tmp/rta_*`) instead of listing files, or run separate commands per file.
 
 ### Gain Targets
 
@@ -116,11 +122,11 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 
 **First pass** — RTA starts immediately, editor starts after capture:
 
-1. Clean up stale files: `rm -f /tmp/rta_batch_quick.jsonl /tmp/rta_batch_retry.jsonl /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl /tmp/rta_quick_done /tmp/rta_retry_done /tmp/rta_ready`
+1. Clean up stale files: `rm -f /tmp/rta_*` (shell glob — lets the shell expand, matches permission pattern)
 2. Start **RTA gathering agent** immediately (Task agent, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
-3. Run capture in parallel: `python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
+3. Run capture in parallel: `venv/bin/python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
 4. Capture done → **routing verification** then active channel list:
-   a. Extract the `fx_routing` and channel insert data from the capture: `python scripts/extract.py --scope editor <capture_file>` — check `fx_routing` in the output.
+   a. Extract the `fx_routing` and channel insert data from the capture: `venv/bin/python scripts/extract.py --scope editor <capture_file>` — check `fx_routing` in the output.
    b. Cross-check against the expected FX routing table (from `CLAUDE.md`):
       - FX1: Ultimo Compressor → Bass (ch31) channel insert (tonal fuzz)
       - FX2: Hall Reverb (CamVerb) → bus 16 send/return (no insert)
@@ -137,12 +143,12 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 6. Spawn **editor** (Task agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
 7. Poll for quick pass to finish (5 min timeout):
    ```bash
-   python scripts/poll_file.py --file /tmp/rta_quick_done --timeout 300
+   venv/bin/python scripts/poll_file.py --file /tmp/rta_quick_done --timeout 300
    ```
 8. Back up quick data BEFORE splice (splice deletes source): `cp /tmp/rta_batch_quick.jsonl /tmp/rta_batch_backup.jsonl`
 9. Splice quick data into capture, then signal editor (two separate Bash calls):
    ```bash
-   python scripts/splice_rta.py /tmp/rta_batch_quick.jsonl <capture_file>
+   venv/bin/python scripts/splice_rta.py /tmp/rta_batch_quick.jsonl <capture_file>
    ```
    ```bash
    touch /tmp/rta_ready
@@ -150,24 +156,33 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
    EQ agents can now start with partial RTA data.
 10. Poll for retry pass to finish (5 min timeout):
     ```bash
-    python scripts/poll_file.py --file /tmp/rta_retry_done --timeout 300
+    venv/bin/python scripts/poll_file.py --file /tmp/rta_retry_done --timeout 300
     ```
 11. If retry data exists, append to backup: `cat /tmp/rta_batch_retry.jsonl >> /tmp/rta_batch_backup.jsonl` (if file doesn't exist, command fails harmlessly — continue). Do NOT splice retry data into the current capture (editor is already using it). Retry data becomes available on iteration 2+ via the backup.
 12. Wait for the **editor** to finish.
-13. Clean up: `rm -f /tmp/rta_ready /tmp/rta_quick_done /tmp/rta_retry_done`
+13. Clean up (three separate Bash calls — multi-path `rm` fails permission matching):
+    ```bash
+    rm -f /tmp/rta_ready
+    ```
+    ```bash
+    rm -f /tmp/rta_quick_done
+    ```
+    ```bash
+    rm -f /tmp/rta_retry_done
+    ```
 14. Add editor summary to changelog, present to engineer, flag concerns.
 
 **Subsequent passes** — shorter capture, RTA data carried forward:
 
-1. Run capture: `python scripts/session_capture.py --duration 5`
+1. Run capture: `venv/bin/python scripts/session_capture.py --duration 5`
 2. Splice saved RTA data into new capture (copy first since splice deletes its source — two separate Bash calls):
    ```bash
    cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl
    ```
    ```bash
-   python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   venv/bin/python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
-3. Get active channels: `python scripts/extract.py --scope editor <new_capture_file>` — extract only `active_channels`, discard the rest.
+3. Get active channels: `venv/bin/python scripts/extract.py --scope editor <new_capture_file>` — extract only `active_channels`, discard the rest.
 4. Assemble context brief with **RTA status: present in capture**
 5. Spawn editor
 6. Relay summary, update changelog
@@ -178,7 +193,7 @@ If RTA gathering failed or was skipped entirely (no musicians playing during cap
 
 When the engineer wraps up:
 1. Run a final capture
-2. Diff current state against the initial capture: `python scripts/diff_sessions.py --text <initial_capture_file> <final_capture_file>`
+2. Diff current state against the initial capture: `venv/bin/python scripts/diff_sessions.py --text <initial_capture_file> <final_capture_file>`
 3. Analyze: what did the engineer change, undo, or leave alone?
 4. Check for buses active in the capture that aren't documented in `docs/CHANNELS.md`. If found, remind the engineer to verify their routing and purpose while the board is on.
 5. Update `docs/CORRECTIONS.md` with concise observations:
@@ -197,8 +212,9 @@ You are an RTA data gathering agent for a Behringer X-32 mixer. Your ONLY job is
 (frequency analysis) on each channel and collect the results to a file.
 You do NOT analyze the data or make suggestions.
 
-Setup:
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
+Setup (run each command as a separate Bash call — never chain with &&):
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
+(working directory persists — all subsequent calls use venv/bin/python scripts/...)
 
 Channels to scan (one at a time — X32 hardware limitation):
 Vocals: 1, 2, 3, 4, 5, 6, 7
@@ -209,7 +225,7 @@ Drums: 22, 23, 24, 25, 26, 27, 28
 ## Pass 1: Quick scan (with silence early-exit)
 
 For each channel:
-python scripts/rta_listen.py --channel N --until-confident --silence-timeout 3 --append-to /tmp/rta_batch_quick.jsonl
+venv/bin/python scripts/rta_listen.py --channel N --until-confident --silence-timeout 3 --append-to /tmp/rta_batch_quick.jsonl
 
 Track which channels exit with "silence_exit": true in the output (grep stderr for
 "silence timeout" or check the JSONL line). Keep a list of silent channels.
@@ -219,7 +235,7 @@ When ALL channels are scanned: touch /tmp/rta_quick_done
 ## Pass 2: Retry silent channels (full duration)
 
 For each channel that exited silently in Pass 1:
-python scripts/rta_listen.py --channel N --until-confident --append-to /tmp/rta_batch_retry.jsonl
+venv/bin/python scripts/rta_listen.py --channel N --until-confident --append-to /tmp/rta_batch_retry.jsonl
 
 No --silence-timeout this time — give them the full duration.
 If a channel STILL returns no data, skip it.
@@ -244,9 +260,11 @@ You are a **mix editor agent** for a Behringer X-32 mixer. You work autonomously
 
 ### Setup
 
+Run each command as a separate Bash call — never chain with `&&`. Working directory persists.
 ```bash
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
 ```
+All Python scripts use `venv/bin/python scripts/...` directly (no venv activation needed).
 
 Read `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, and `docs/TECHNICAL.md` from your context brief. Use patterns from CORRECTIONS.md to calibrate suggestions — e.g., if the log shows the engineer consistently raises vocal levels after Claude's suggestions, bias vocal levels slightly higher. Do NOT read the capture JSON — your context brief has the active channel list and everything you need to dispatch subagents.
 
@@ -263,7 +281,7 @@ Read `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, and `docs/TECHNICAL.md` from you
 
 ```bash
 # Write changes to a batch file, then execute in one connection:
-python scripts/control.py --batch /tmp/mix_changes.json
+venv/bin/python scripts/control.py --batch /tmp/mix_changes.json
 ```
 
 Batch file format (array of raw OSC address/value pairs — all values 0.0-1.0 normalized):
@@ -323,7 +341,7 @@ Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subag
 
 **Step 2 (only if RTA status is "pending"):** Wait for RTA data, then dispatch EQ agents:
 ```bash
-python scripts/poll_file.py --file /tmp/rta_ready --timeout 600
+venv/bin/python scripts/poll_file.py --file /tmp/rta_ready --timeout 600
 ```
 If poll_file.py exits with error (timeout), proceed without RTA data.
 Then send all 4 EQ agents in one message:
@@ -355,13 +373,13 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
 3. Append all changes to the changelog file.
 4. Write to batch file and apply:
    ```bash
-   python scripts/control.py --batch /tmp/metering_changes.json
+   venv/bin/python scripts/control.py --batch /tmp/metering_changes.json
    ```
 5. If any trim changes were applied, update meter peaks in the capture so subsequent iterations see accurate signal levels:
    ```bash
-   python scripts/update_peaks.py <capture_file> <ch:dB> [ch:dB ...]
+   venv/bin/python scripts/update_peaks.py <capture_file> <ch:dB> [ch:dB ...]
    ```
-   Calculate each offset as `new_trim_dB - old_trim_dB` from the agent's suggestion (agents provide both raw and human-readable dB equivalents). Example: `python scripts/update_peaks.py captures/session_XXX.json 5:+3.0 17:-2.0`
+   Calculate each offset as `new_trim_dB - old_trim_dB` from the agent's suggestion (agents provide both raw and human-readable dB equivalents). Example: `venv/bin/python scripts/update_peaks.py captures/session_XXX.json 5:+3.0 17:-2.0`
 
 **Stage 2: EQ batch** (after EQ agents return):
 1. Collect EQ agent suggestions (HPF, EQ bands, FX tone).
@@ -371,18 +389,18 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
 3. Append all changes to the changelog file.
 4. Write to batch file and apply:
    ```bash
-   python scripts/control.py --batch /tmp/eq_changes.json
+   venv/bin/python scripts/control.py --batch /tmp/eq_changes.json
    ```
 
 ### Phase 3: Iterate
 
-1. Run a new capture: `python scripts/session_capture.py --duration 5`
+1. Run a new capture: `venv/bin/python scripts/session_capture.py --duration 5`
 2. Splice RTA data into the new capture so EQ agents have frequency data (two separate Bash calls):
    ```bash
    cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl
    ```
    ```bash
-   python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   venv/bin/python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
    If `/tmp/rta_batch_backup.jsonl` doesn't exist (RTA was unavailable), skip this step — EQ agents will note missing RTA data.
 3. Assemble updated context brief (updated changelog from Phase 2). **Dispatch all 7 subagents in parallel** with updated context brief + new capture path. Never reuse a subagent from a previous pass.
@@ -396,13 +414,13 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
 
 After channel-level convergence, dispatch upstream subagents for bus/main dynamics and livestream optimization. **Same coordination pattern as Phases 1-2** — you collect suggestions, deconflict, and batch-apply.
 
-1. Run a fresh capture: `python scripts/session_capture.py --duration 5`
+1. Run a fresh capture: `venv/bin/python scripts/session_capture.py --duration 5`
 2. If RTA backup exists, splice into new capture (two separate Bash calls):
    ```bash
    cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl
    ```
    ```bash
-   python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   venv/bin/python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
 3. **Full mix mode** — dispatch both in parallel:
    - Bus Dynamics agent — `extract.py --scope dynamics`
@@ -413,7 +431,7 @@ After channel-level convergence, dispatch upstream subagents for bus/main dynami
 5. Collect results, deconflict, append all changes to the changelog file.
 6. Apply one final batch:
    ```bash
-   python scripts/control.py --batch /tmp/upstream_changes.json
+   venv/bin/python scripts/control.py --batch /tmp/upstream_changes.json
    ```
 
 ### Phase 5: Summary
@@ -441,10 +459,11 @@ You are a **fresh analysis agent** for a Behringer X-32 mixer. Evaluate the mix 
 
 You NEVER touch the mixer. You analyze data and return suggestions only.
 
-**Setup:**
+**Setup** (run each command as a separate Bash call — never chain with `&&`):
 ```bash
-cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source venv/bin/activate
+cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
 ```
+Working directory persists — all subsequent calls use `venv/bin/python scripts/...` (no venv activation needed).
 
 **Your data:** Run the `extract.py` command given in your prompt to get exactly the data you need. Do NOT read the full capture JSON — the extract gives you only what's relevant to your scope. Also read the doc files specified in your prompt.
 
@@ -464,7 +483,7 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control" && source
 
 **Scope**: Preamp + dynamics + reverb sends for active vocal channels.
 
-**Data:** `python scripts/extract.py --scope metering-vocals <capture_file>`
+**Data:** `venv/bin/python scripts/extract.py --scope metering-vocals <capture_file>`
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 For each active vocal channel:
@@ -484,7 +503,7 @@ For each active vocal channel:
 
 **Scope**: Preamp + dynamics + reverb sends for active drum channels.
 
-**Data:** `python scripts/extract.py --scope metering-drums <capture_file>`
+**Data:** `venv/bin/python scripts/extract.py --scope metering-drums <capture_file>`
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Targets by drum type:**
@@ -513,7 +532,7 @@ For each active drum channel:
 
 **Scope**: Preamp + dynamics + reverb sends for active instrument channels.
 
-**Data:** `python scripts/extract.py --scope metering-instruments <capture_file>`
+**Data:** `venv/bin/python scripts/extract.py --scope metering-instruments <capture_file>`
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Notes:** See `docs/CHANNELS.md` for source details. Key: piano low/high is NOT a stereo pair — it's a string split (affects gain staging).
@@ -560,7 +579,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Scope**: EQ + HPF for vocal channels (ch1-9), Tammy voice bus (09), and Voices FOH bus (05/06). Also evaluates exciter FX tone.
 
-**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch01-ch09, bus05, bus06, bus09, FX exciters
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on ch01-ch09, bus05, bus06, bus09, FX exciters
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Signal path context:** Tammy (ch1) routes directly to main LR (`st=1`) with FX4 exciter as channel insert — she is NOT in the Voices bus. Other vocals (ch2-7) route through Voices bus (05/06) with FX8 exciter to both main LR and Cam L/R matrices. Tammy has a dedicated livestream bus (09 "Tammy voice") for independent matrix send level.
@@ -581,7 +600,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Scope**: EQ + HPF for drum channels (ch22-28) and drums FOH bus (07/08).
 
-**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch22-ch28, bus07, bus08
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on ch22-ch28, bus07, bus08
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Signal path context:** Drum channels route through FOH processing buses 07/08 (with FX5 Ultimo Compressor + FX6 Precision Limiter inserts). These buses feed both main LR and Cam L/R matrices — EQ changes affect both FOH and livestream. Bus 12 is decommissioned.
@@ -597,7 +616,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Scope**: EQ + HPF for instrument channels (ch17-21, 29-32) and buses (10 Acoustic, 13 Electronic). Also evaluates amp sim FX tone.
 
-**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on ch17-ch21, ch29-ch32, bus10, bus13, FX amp sim
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on ch17-ch21, ch29-ch32, bus10, bus13, FX amp sim
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Work order:**
@@ -617,7 +636,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Scope**: Main bus EQ, matrix EQ (livestream + house), remaining buses not covered by section agents (ambient, CamVerb, AudVerb, Acoustic 10, Electronic 13), and **reverb FX engine parameters** (FX2 CamVerb, FX3 AudVerb).
 
-**Data:** `python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not in {05, 06, 07, 08, 09}
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not in {05, 06, 07, 08, 09}
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Note:** FOH processing bus EQ (Voices 05/06, drums 07/08) is now handled by the Vocals EQ and Drums EQ agents respectively. Tammy voice bus (09) is handled by Vocals EQ agent. Bus 12 is decommissioned.
@@ -643,8 +662,8 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Scope**: Bus compressors, FOH bus FX insert dynamics (Ultimo/Limiter), and master compressor. No channel-level or EQ work.
 
-**Data:** `python scripts/extract.py --scope dynamics <capture_file>`
-**Also query:** `python scripts/query.py --fx 5 --fx 6` for drum FOH bus insert parameters
+**Data:** `venv/bin/python scripts/extract.py --scope dynamics <capture_file>`
+**Also query:** `venv/bin/python scripts/query.py --fx 5 --fx 6` for drum FOH bus insert parameters
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Work order:**
@@ -672,7 +691,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Scope**: Livestream send level balance and matrix compressors. No channel-level, bus EQ, or bus compressor work.
 
-**Data:** `python scripts/extract.py --scope livestream <capture_file>`
+**Data:** `venv/bin/python scripts/extract.py --scope livestream <capture_file>`
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/TECHNICAL.md`
 
 The engineer can't hear the livestream from the room — optimize by the numbers.
