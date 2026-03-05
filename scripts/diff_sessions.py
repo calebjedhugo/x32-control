@@ -81,12 +81,13 @@ HPF_THRESHOLD = 5         # Hz
 class Change:
     """A single detected change between sessions."""
     def __init__(self, channel: str, category: str, description: str,
-                 before: str = "", after: str = ""):
+                 before: str = "", after: str = "", suspicious: bool = False):
         self.channel = channel
         self.category = category
         self.description = description
         self.before = before
         self.after = after
+        self.suspicious = suspicious
 
     def to_dict(self):
         d = {
@@ -98,6 +99,8 @@ class Change:
             d["before"] = self.before
         if self.after:
             d["after"] = self.after
+        if self.suspicious:
+            d["suspicious"] = True
         return d
 
 
@@ -162,8 +165,13 @@ def diff_channels(ch_key: str, old: dict, new: dict) -> List[Change]:
     old_eq = old.get("eq", {})
     new_eq = new.get("eq", {})
     if old_eq.get("on") != new_eq.get("on"):
-        changes.append(Change(label, "eq",
-                              f"EQ {'enabled' if new_eq.get('on') else 'disabled'}"))
+        # Suspicious if EQ was ON with tuned bands and now shows OFF
+        sus = (old_eq.get("on") and not new_eq.get("on") and
+               any(b.get("gain", 0.5) != 0.5 for b in old_eq.get("bands", [])))
+        desc = f"EQ {'enabled' if new_eq.get('on') else 'disabled'}"
+        if sus:
+            desc += "  (possible query failure — was ON with tuned bands)"
+        changes.append(Change(label, "eq", desc, suspicious=sus))
 
     # EQ band changes
     if old_eq.get("on") and new_eq.get("on"):
@@ -187,25 +195,38 @@ def diff_channels(ch_key: str, old: dict, new: dict) -> List[Change]:
 
             if parts:
                 freq_hz = eq_freq_to_hz(nb["freq"])
+                # Flag as suspicious if freq is changing TO or FROM exactly 0.5 (632Hz default)
+                sus = (ob.get("freq") == 0.5 or nb.get("freq") == 0.5) and freq_diff > EQ_FREQ_THRESHOLD
+                desc = f"EQ band {band_num} at {format_freq(freq_hz)}: {', '.join(parts)}"
+                if sus:
+                    desc += "  (possible query failure)"
                 changes.append(Change(
-                    label, "eq",
-                    f"EQ band {band_num} at {format_freq(freq_hz)}: {', '.join(parts)}",
-                    "", ""
+                    label, "eq", desc, "", "", suspicious=sus
                 ))
 
     # Gate
     old_gate = old.get("gate", {})
     new_gate = new.get("gate", {})
     if old_gate.get("on") != new_gate.get("on"):
-        changes.append(Change(label, "gate",
-                              f"Gate {'enabled' if new_gate.get('on') else 'disabled'}"))
+        # Suspicious if gate was ON with tuned params and now shows OFF
+        sus = (old_gate.get("on") and not new_gate.get("on") and
+               old_gate.get("threshold", 0.5) != 0.5)
+        desc = f"Gate {'enabled' if new_gate.get('on') else 'disabled'}"
+        if sus:
+            desc += "  (possible query failure — was ON with tuned params)"
+        changes.append(Change(label, "gate", desc, suspicious=sus))
 
     # Compressor
     old_comp = old.get("compressor", {})
     new_comp = new.get("compressor", {})
     if old_comp.get("on") != new_comp.get("on"):
-        changes.append(Change(label, "dynamics",
-                              f"Compressor {'enabled' if new_comp.get('on') else 'disabled'}"))
+        # Suspicious if comp was ON with tuned params and now shows OFF
+        sus = (old_comp.get("on") and not new_comp.get("on") and
+               old_comp.get("threshold", 0.5) != 0.5)
+        desc = f"Compressor {'enabled' if new_comp.get('on') else 'disabled'}"
+        if sus:
+            desc += "  (possible query failure — was ON with tuned params)"
+        changes.append(Change(label, "dynamics", desc, suspicious=sus))
 
     if old_comp.get("on") and new_comp.get("on"):
         if old_comp.get("ratio") != new_comp.get("ratio"):
@@ -298,9 +319,15 @@ def diff_fx(fx_key: str, old: dict, new: dict) -> List[Change]:
     label = fx_key.upper()
 
     if old.get("type_id") != new.get("type_id"):
-        changes.append(Change(label, "fx", "Effect type changed",
+        # Suspicious if FX type changed TO 0 (Hall Reverb = default) from non-zero
+        sus = (new.get("type_id") == 0 and old.get("type_id", 0) != 0)
+        desc = "Effect type changed"
+        if sus:
+            desc += "  (possible query failure — changed to default Hall Reverb)"
+        changes.append(Change(label, "fx", desc,
                               old.get("type_name", "?"),
-                              new.get("type_name", "?")))
+                              new.get("type_name", "?"),
+                              suspicious=sus))
 
     # Parameter changes (only check if same effect type)
     if old.get("type_id") == new.get("type_id"):
@@ -340,7 +367,9 @@ def generate_text_diff(changes: List[Change],
     new_time = new_meta.get("capture_time", "?")
     lines.append(f"Before: {old_time}")
     lines.append(f"After:  {new_time}")
-    lines.append(f"Changes found: {len(changes)}")
+    suspicious_count = sum(1 for c in changes if c.suspicious)
+    lines.append(f"Changes found: {len(changes)}" +
+                 (f" ({suspicious_count} suspicious — marked [?])" if suspicious_count else ""))
     lines.append("")
 
     if not changes:
@@ -380,10 +409,11 @@ def generate_text_diff(changes: List[Change],
 
         lines.append(f"--- {header} ---")
         for c in cat_changes:
+            prefix = "[?] " if c.suspicious else "  "
             if c.before and c.after:
-                lines.append(f"  [{c.channel}] {c.description}: {c.before} -> {c.after}")
+                lines.append(f"{prefix}[{c.channel}] {c.description}: {c.before} -> {c.after}")
             else:
-                lines.append(f"  [{c.channel}] {c.description}")
+                lines.append(f"{prefix}[{c.channel}] {c.description}")
         lines.append("")
 
     return "\n".join(lines)

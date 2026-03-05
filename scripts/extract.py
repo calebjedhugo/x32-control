@@ -377,6 +377,7 @@ SCOPE_HANDLERS = {
     'metering-vocals': lambda c: extract_metering(c, METERING_SCOPES['metering-vocals']),
     'metering-drums': lambda c: extract_metering(c, METERING_SCOPES['metering-drums']),
     'metering-instruments': lambda c: extract_metering(c, METERING_SCOPES['metering-instruments']),
+    'metering': None,  # Requires --channels; handled in main()
     'eq': extract_eq,
     'editor': extract_editor,
     'dynamics': extract_dynamics,
@@ -390,15 +391,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Scopes:
-  metering-vocals       Preamp + dynamics for vocal channels (ch1-9)
-  metering-drums        Preamp + dynamics for drum channels (ch22-28)
-  metering-instruments  Preamp + dynamics for instrument channels (ch17-21, 29-32)
+  metering              Preamp + dynamics for specified channels (requires --channels)
+  metering-vocals       Preamp + dynamics for vocal channels (ch1-9, legacy)
+  metering-drums        Preamp + dynamics for drum channels (ch22-28, legacy)
+  metering-instruments  Preamp + dynamics for instrument channels (ch17-21, 29-32, legacy)
   eq                    EQ + HPF + FX tone for all active channels + buses + main + matrices
   editor                Overview: active channels, routing, bus/main faders, DCA, FX routing
   dynamics              Bus/main/matrix compressor settings
   livestream            Bus->matrix sends, matrix settings, FX returns
 
+The --channels flag works with any metering scope. With --scope metering it is
+required. With metering-vocals/drums/instruments it overrides the default channels.
+
 Examples:
+    python extract.py --scope metering --channels 1,2,3,5,7 captures/session_XXX.json
     python extract.py --scope metering-drums captures/session_2026-02-18_190539.json
     python extract.py --scope eq captures/session_2026-02-18_190539.json
         """
@@ -410,12 +416,22 @@ Examples:
         help="What data to extract"
     )
     parser.add_argument(
+        "--channels", "-c",
+        help="Comma-separated channel list (e.g., 1,2,3,5,7). "
+             "Required for --scope metering, optional override for metering-* scopes."
+    )
+    parser.add_argument(
         "capture_file",
         nargs="?",
         help="Path to session capture JSON (default: latest in captures/)"
     )
 
     args = parser.parse_args()
+
+    # Validate --channels for metering scope
+    if args.scope == 'metering' and not args.channels:
+        print("Error: --scope metering requires --channels (e.g., --channels 1,2,3,5,7)", file=sys.stderr)
+        sys.exit(1)
 
     # Find capture file
     if args.capture_file:
@@ -437,8 +453,17 @@ Examples:
     with open(capture_path) as f:
         capture = json.load(f)
 
-    handler = SCOPE_HANDLERS[args.scope]
-    result = handler(capture)
+    # Handle --channels override for metering scopes
+    if args.channels:
+        channel_list = [int(c.strip()) for c in args.channels.split(',')]
+        result = extract_metering(capture, channel_list)
+    elif args.scope == 'metering':
+        # Already checked above, but just in case
+        print("Error: --scope metering requires --channels", file=sys.stderr)
+        sys.exit(1)
+    else:
+        handler = SCOPE_HANDLERS[args.scope]
+        result = handler(capture)
 
     # Output compact JSON
     print(json.dumps(result, indent=2))

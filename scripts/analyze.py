@@ -94,7 +94,7 @@ _LABEL_RULES = [
     ("kick",            ["kick", "bass drum", "bassdrum"]),
     ("snare",           ["snare"]),
     ("floor_tom",       ["floor tom", "flr tom"]),
-    ("rack_tom",        ["mid tom", "hi tom", "rack tom", "mid high"]),
+    ("rack_tom",        ["mid tom", "hi tom", "high tom", "rack tom", "mid high"]),
     ("overhead",        ["overhead", "oh-", "oh ", "hi-hat", "hihat", "ride", "cymbal"]),
     # Instruments (specific before generic)
     ("piano",           ["piano", "pno"]),
@@ -102,10 +102,10 @@ _LABEL_RULES = [
     ("violin",          ["violin", "fiddle"]),
     ("bass",            ["bass"]),
     ("keys",            ["kb-", "kb ", "keyboard", "keys", "synth", "electric key", "elec key"]),
-    ("electric_guitar", ["elec gtr", "electric gtr", "elec guitar", "electric guitar", "amp sim"]),
+    ("electric_guitar", ["e-guitar", "e-gtr", "elec gtr", "electric gtr", "elec guitar", "electric guitar", "amp sim"]),
     ("acoustic_guitar", ["acoustic", "acou", "guitar", "gtr"]),
     # Speaking
-    ("speaking",        ["pastor", "announce", "speak", "headset"]),
+    ("speaking",        ["pastor", "announc", "annouc", "announce", "speak", "headset"]),
     # Auxiliary
     ("ambient",         ["ambient", "amb "]),
     ("computer",        ["computer", "pc ", "playback"]),

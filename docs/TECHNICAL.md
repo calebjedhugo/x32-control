@@ -77,6 +77,7 @@ FX:  1  1  2  2  3  3  4  4
 ### Bus → Matrix Sends
 - `/bus/XX/mix/YY/level` — send level from bus XX to matrix YY (1-6)
 - `/bus/XX/mix/YY/on` — send on/off
+- **All bus→matrix sends are PRE-FADER.** Bus faders (`/bus/XX/mix/fader`) do NOT affect matrix output. Only the send level (`/bus/XX/mix/YY/level`) controls what reaches the matrix.
 
 ### Main → Matrix Sends
 - `/main/st/mix/YY/level` — send level from main to matrix YY
@@ -263,7 +264,16 @@ python scripts/query.py --fx 1
 
 - **EQ/dynamics on/off queries occasionally wrong**: Fixed Feb 22, 2026. Root cause: `mixer.query()` returns None ~46% of individual calls. With 5 retries, ~2% still fail — defaulting to 0 reports "off" when actually "on". Fix: `reliable_on_off_query()` uses 10 retries (<0.05% failure rate) + stderr warning on failure.
 
+- **Query failures produce default values**: When all retries fail, `reliable_query()` returns the caller's `default` parameter. Common corrupted defaults: EQ freq → 0.5 (632Hz), comp/gate on → 0 (OFF), FX type → 0 (Hall Reverb). Mitigations added Mar 2026:
+  - **Background keepalive**: `/xremote` sent every 2s during capture keeps the UDP connection hot, dramatically improving response rate.
+  - **Increased retries**: `reliable_query()` defaults raised from 5/0.15s to 8/0.2s. `warmup_connection()` sends 3 throwaway queries instead of 1.
+  - **Failure tracking**: All failed addresses logged in `metadata.query_failures`.
+  - **Post-capture validation**: `validate_capture()` flags suspicious patterns (e.g., EQ freq at 0.5 with non-default gain).
+  - **Diff suspicious flags**: `diff_sessions.py` marks changes TO/FROM default values with `[?]` prefix.
+
 ## Changelog
+
+- **Mar 4, 2026**: Query reliability improvements — background `/xremote` keepalive during capture, raised `reliable_query()` defaults to 8 retries / 0.2s delay, 3-query warmup, failure tracking in capture metadata, `validate_capture()` post-capture validation, suspicious change detection in `diff_sessions.py`. Removed hardcoded channel-to-instrument mappings — auto-awesome now classifies channels by mixer label. Added `--channels` flag to `extract.py`. Fixed `classify_channel()` gaps: "high tom", "e-guitar"/"e-gtr", "announc".
 
 - **Feb 22, 2026**: Fixed on/off readback reliability — `reliable_on_off_query()` with 10 retries for all toggle parameters (HPF, EQ, gate, comp, insert, routing, bus sends). Reduces false-negative rate from ~2% to <0.05%.
 

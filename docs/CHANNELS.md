@@ -2,6 +2,8 @@
 
 Read this when you need detailed info about specific channels, personnel, or stage layout.
 
+**Note:** Automation (auto-awesome, extract.py) uses mixer labels to classify channels, not the channel numbers in this document. Channel assignments can change — always verify against the current capture. This document serves as the default layout reference and provides per-channel context (voice types, mic details, drum sizes, etc.) that subagents look up at runtime.
+
 ## Channel Map
 
 ### Vocals & Inputs (1-16)

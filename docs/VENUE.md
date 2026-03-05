@@ -51,19 +51,19 @@ Read this when discussing room acoustics, PA issues, or mix strategy.
 
 Captured with master at unity, 2026-02-25.
 
-### Vocals (ch1-7)
+### Vocals
 | Metric | Raw | dB |
 |--------|-----|-----|
 | Target range | 0.082 – 0.258 | -21.7 to -11.8 |
 | Average peak | 0.151 | -16.4 |
 
-### Drums (ch22-28)
+### Drums
 | Metric | Raw | dB |
 |--------|-----|-----|
 | Target range | 0.061 – 0.217 | -24.3 to -13.3 |
 | Average peak | 0.131 | -17.7 |
 
-### Instruments (ch17-21, 29-32)
+### Instruments
 | Metric | Raw | dB |
 |--------|-----|-----|
 | Target range | 0.044 – 0.156 | -27.2 to -16.1 |

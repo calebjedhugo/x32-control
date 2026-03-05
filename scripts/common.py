@@ -320,7 +320,8 @@ def get_state_value(state: dict, base_addr: str, prop: str, default=None):
     return state.get(key, default)
 
 
-async def reliable_query(mixer, address: str, retries: int = 5, delay: float = 0.15, default=None):
+async def reliable_query(mixer, address: str, retries: int = 8, delay: float = 0.2,
+                         default=None, failures: list = None):
     """
     Query a mixer address with retries. First query often returns None.
 
@@ -328,14 +329,15 @@ async def reliable_query(mixer, address: str, retries: int = 5, delay: float = 0
     Use mixer.query() directly for these parameters, but it needs warmup.
 
     Note: Some parameters (eq/on, dyn/on, dyn/ratio) are particularly flaky
-    and may need more retries. Default is now 5 retries.
+    and may need more retries. Default is now 8 retries with 0.2s delay.
 
     Args:
         mixer: Connected mixer instance
         address: OSC address like "/ch/08/eq/1/g"
-        retries: Number of retry attempts (default 5)
-        delay: Delay between retries in seconds
+        retries: Number of retry attempts (default 8)
+        delay: Delay between retries in seconds (default 0.2)
         default: Default value if all retries fail
+        failures: Optional list to append failed addresses to
 
     Returns:
         First value from query result, or default
@@ -346,6 +348,8 @@ async def reliable_query(mixer, address: str, retries: int = 5, delay: float = 0
             return result[0] if isinstance(result, tuple) else result
         if attempt < retries - 1:
             await asyncio.sleep(delay)
+    if failures is not None:
+        failures.append(address)
     return default
 
 
@@ -353,11 +357,12 @@ async def warmup_connection(mixer):
     """
     Send initial queries to warm up the mixer connection.
 
-    First query after connection often returns None. This sends a
-    throwaway query to establish communication.
+    First queries after connection often return None. This sends
+    throwaway queries to establish communication.
     """
-    await mixer.query('/ch/01/mix/fader')
-    await asyncio.sleep(0.2)
+    for _ in range(3):
+        await mixer.query('/ch/01/mix/fader')
+        await asyncio.sleep(0.2)
 
 
 # HPF (High-Pass Filter) frequency values in Hz
