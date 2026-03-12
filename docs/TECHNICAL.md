@@ -1,8 +1,16 @@
 # Technical Notes (Developer Reference)
 
+## Vendored Library
+
+The `behringer_mixer` library is vendored at `lib/behringer_mixer/` (copied from the pip package). This gives us permanent control over the source — no pip overwrites.
+
+**Key modification (Mar 2026):** Per-address response matching in `mixer_base.py`. The upstream library stores all OSC responses in a single global buffer (`_info_response`), discarding the response address. When queries fire in rapid succession, responses arrive out of order and get attributed to the wrong query. The fix adds `_pending_queries` / `_matched_responses` dicts so each `query()` call waits for its specific address response via `asyncio.Event`. This eliminated the 46% individual query failure rate that was the root cause of false EQ changes, compressor-reported-disabled, and other data bugs in CORRECTIONS.md.
+
+The `send()` method is unchanged — still used for fire-and-forget commands (`/xremote`, `set_value`).
+
 ## Library Limitations
 
-The `behringer_mixer` library has limitations:
+The library has limitations:
 - `state()` only returns fader, on/off, name, color - not EQ/dynamics/FX
 - `set_value()` silently fails for addresses not in its internal mapping
 
@@ -114,16 +122,15 @@ mtx06: Computer
 - Example: value 4 = binary 100 = DCA3 only
 - Example: value 5 = binary 101 = DCA1 + DCA3
 
-### Current DCA Assignments (as of 2026-02-15)
+### DCA Group Names
+DCA names are stable board config. Membership is dynamic — read from the capture via `/ch/XX/grp/dca` bitmask.
 ```
-DCA1 (Vox):      ch01-06 (singing vocals)
-DCA2 (Speaking):  ch09, ch10, ch13, ch14
-DCA3 (Inst):      ch08, ch17-22, ch28-32, bus07-08
-DCA4 (Aux):       ch11, ch15, ch16
-DCA5 (Monitors):  bus01-06
+DCA1: Vox        (singing vocals)
+DCA2: Speaking   (pastor, announcements)
+DCA3: Inst       (instruments)
+DCA4: Aux        (auxiliary inputs)
+DCA5: Monitors   (monitor sends)
 ```
-Note: ch07 (Kat), ch23-27 (drums except floor tom) have no DCA assignment.
-ch08 (pastor) is in DCA3 (Inst) instead of DCA2 (Speaking) — possible misconfiguration.
 
 ## Meter Subscription
 
@@ -262,16 +269,17 @@ python scripts/query.py --fx 1
 
 ## Known Issues
 
-- **EQ/dynamics on/off queries occasionally wrong**: Fixed Feb 22, 2026. Root cause: `mixer.query()` returns None ~46% of individual calls. With 5 retries, ~2% still fail — defaulting to 0 reports "off" when actually "on". Fix: `reliable_on_off_query()` uses 10 retries (<0.05% failure rate) + stderr warning on failure.
+- **OSC response misattribution (FIXED Mar 2026)**: The upstream `behringer_mixer` library stored all responses in a single global buffer, discarding the response address. With ~2000 queries per capture, responses arrived out of order and got attributed to the wrong query — 46% individual failure rate. Retries masked it but couldn't fix it: a "successful" retry could read a stale response from a different address. **Fix**: Vendored the library to `lib/behringer_mixer/` and added per-address response matching in `mixer_base.py`. Each `query()` now waits for its specific address via `asyncio.Event`. Retries reduced from 8-10 to 3 (only covering UDP packet loss). Warmup reduced from 3 queries to 1.
 
-- **Query failures produce default values**: When all retries fail, `reliable_query()` returns the caller's `default` parameter. Common corrupted defaults: EQ freq → 0.5 (632Hz), comp/gate on → 0 (OFF), FX type → 0 (Hall Reverb). Mitigations added Mar 2026:
-  - **Background keepalive**: `/xremote` sent every 2s during capture keeps the UDP connection hot, dramatically improving response rate.
-  - **Increased retries**: `reliable_query()` defaults raised from 5/0.15s to 8/0.2s. `warmup_connection()` sends 3 throwaway queries instead of 1.
+- **Query failures produce default values**: When all retries fail, `reliable_query()` returns the caller's `default` parameter. Common corrupted defaults: EQ freq → 0.5 (632Hz), comp/gate on → 0 (OFF), FX type → 0 (Hall Reverb). Mitigations:
+  - **Background keepalive**: `/xremote` sent every 2s during capture keeps the UDP connection hot.
   - **Failure tracking**: All failed addresses logged in `metadata.query_failures`.
   - **Post-capture validation**: `validate_capture()` flags suspicious patterns (e.g., EQ freq at 0.5 with non-default gain).
   - **Diff suspicious flags**: `diff_sessions.py` marks changes TO/FROM default values with `[?]` prefix.
 
 ## Changelog
+
+- **Mar 11, 2026**: Root cause fix for OSC response misattribution. Vendored `behringer_mixer` to `lib/behringer_mixer/` and added per-address response matching (`_pending_queries` / `_matched_responses` dicts + `asyncio.Event` in `query()`). Eliminated 46% query failure rate. Reduced retry params: `reliable_query()` 8/0.2s → 3/0.05s, `reliable_on_off_query()` 10/0.1s → 3/0.05s, `warmup_connection()` 3 queries → 1. Added capture consistency verification to auto-awesome first pass.
 
 - **Mar 4, 2026**: Query reliability improvements — background `/xremote` keepalive during capture, raised `reliable_query()` defaults to 8 retries / 0.2s delay, 3-query warmup, failure tracking in capture metadata, `validate_capture()` post-capture validation, suspicious change detection in `diff_sessions.py`. Removed hardcoded channel-to-instrument mappings — auto-awesome now classifies channels by mixer label. Added `--channels` flag to `extract.py`. Fixed `classify_channel()` gaps: "high tom", "e-guitar"/"e-gtr", "announc".
 

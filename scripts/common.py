@@ -85,6 +85,7 @@ async def get_mixer(config: Optional[Dict[str, Any]] = None):
     Returns:
         Connected mixer instance from behringer_mixer
     """
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
     from behringer_mixer import mixer_api
 
     if config is None:
@@ -320,22 +321,20 @@ def get_state_value(state: dict, base_addr: str, prop: str, default=None):
     return state.get(key, default)
 
 
-async def reliable_query(mixer, address: str, retries: int = 8, delay: float = 0.2,
+async def reliable_query(mixer, address: str, retries: int = 3, delay: float = 0.05,
                          default=None, failures: list = None):
     """
-    Query a mixer address with retries. First query often returns None.
+    Query a mixer address with retries.
 
-    The behringer_mixer library's state() doesn't include EQ, dynamics, or FX data.
-    Use mixer.query() directly for these parameters, but it needs warmup.
-
-    Note: Some parameters (eq/on, dyn/on, dyn/ratio) are particularly flaky
-    and may need more retries. Default is now 8 retries with 0.2s delay.
+    The vendored behringer_mixer library now uses per-address response matching,
+    so responses are correctly attributed even when queries overlap. Retries
+    only cover UDP packet loss (not response misattribution).
 
     Args:
         mixer: Connected mixer instance
         address: OSC address like "/ch/08/eq/1/g"
-        retries: Number of retry attempts (default 8)
-        delay: Delay between retries in seconds (default 0.2)
+        retries: Number of retry attempts (default 3)
+        delay: Delay between retries in seconds (default 0.05)
         default: Default value if all retries fail
         failures: Optional list to append failed addresses to
 
@@ -355,14 +354,13 @@ async def reliable_query(mixer, address: str, retries: int = 8, delay: float = 0
 
 async def warmup_connection(mixer):
     """
-    Send initial queries to warm up the mixer connection.
+    Send a throwaway query to warm up the mixer connection.
 
-    First queries after connection often return None. This sends
-    throwaway queries to establish communication.
+    First query after connection often returns None due to UDP setup.
+    With per-address response matching, a single warmup is sufficient.
     """
-    for _ in range(3):
-        await mixer.query('/ch/01/mix/fader')
-        await asyncio.sleep(0.2)
+    await mixer.query('/ch/01/mix/fader')
+    await asyncio.sleep(0.1)
 
 
 # HPF (High-Pass Filter) frequency values in Hz

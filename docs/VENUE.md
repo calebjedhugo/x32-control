@@ -73,3 +73,19 @@ Captured with master at unity, 2026-02-25.
 | Metric | Raw | dB |
 |--------|-----|-----|
 | Average peak | 0.119 | -18.5 |
+
+### Livestream Bus Targets
+
+Initial estimates — calibrate after reviewing livestream recordings with bus peak data.
+
+Vocals need to be lower on livestream than FOH because the PA amplifies them in the room, and ambient mics already pick up that amplified sound.
+
+The agent matches each bus by its `name` field in the capture data — no hardcoded bus numbers.
+
+| Role | Name pattern (case-insensitive) | Target Peak (dB) | Notes |
+|------|--------------------------------|-------------------|-------|
+| Vocals | "Voices", "Tammy" | -18 | Lower — PA carries vocals in room |
+| Drums | "drums", "Drums" | -16 | Moderate — already compressed |
+| Instruments | "Acoustic", "Electronic" | -14 | Matched — needs livestream presence |
+| Ambient | "Ambiant", "Ambient" | -24 | Low — flavor, not feature |
+| Reverb | "CamVerb" | -24 | Low — less reverb than FOH |

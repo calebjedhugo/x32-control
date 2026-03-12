@@ -18,13 +18,6 @@ import json
 import sys
 from pathlib import Path
 
-# Channel scope definitions (which channels each metering agent needs)
-METERING_SCOPES = {
-    'metering-vocals': list(range(1, 10)),      # ch1-9 (vocals + speaking)
-    'metering-drums': list(range(22, 29)),       # ch22-28
-    'metering-instruments': list(range(17, 22)) + list(range(29, 33)),  # ch17-21, 29-32
-}
-
 
 def get_active_channels(capture):
     """Get list of active channel numbers from capture analysis."""
@@ -291,6 +284,8 @@ def extract_livestream(capture):
 
     For livestream optimization: what feeds the Cam L/R matrices and at what levels.
     """
+    bus_peaks = capture.get("analysis", {}).get("bus_peaks", {})
+
     result = {
         "buses": {},
         "main": {},
@@ -302,7 +297,7 @@ def extract_livestream(capture):
     for bus_key, bus_data in capture.get("buses", {}).items():
         mtx_sends = bus_data.get("matrix_sends", {})
         if mtx_sends:
-            result["buses"][bus_key] = {
+            bus_extract = {
                 "name": bus_data.get("name", ""),
                 "fader": bus_data.get("fader"),
                 "fader_db": bus_data.get("fader_db"),
@@ -310,6 +305,10 @@ def extract_livestream(capture):
                 "compressor": bus_data.get("compressor", {}),
                 "matrix_sends": mtx_sends,
             }
+            # Include bus meter peak if available (from /meters/2 capture)
+            if bus_key in bus_peaks:
+                bus_extract["meter_peak"] = bus_peaks[bus_key]
+            result["buses"][bus_key] = bus_extract
 
     # Main -> matrix sends
     main_data = capture.get("main", {})
@@ -374,9 +373,6 @@ def extract_dynamics(capture):
 
 
 SCOPE_HANDLERS = {
-    'metering-vocals': lambda c: extract_metering(c, METERING_SCOPES['metering-vocals']),
-    'metering-drums': lambda c: extract_metering(c, METERING_SCOPES['metering-drums']),
-    'metering-instruments': lambda c: extract_metering(c, METERING_SCOPES['metering-instruments']),
     'metering': None,  # Requires --channels; handled in main()
     'eq': extract_eq,
     'editor': extract_editor,
@@ -392,20 +388,13 @@ def main():
         epilog="""
 Scopes:
   metering              Preamp + dynamics for specified channels (requires --channels)
-  metering-vocals       Preamp + dynamics for vocal channels (ch1-9, legacy)
-  metering-drums        Preamp + dynamics for drum channels (ch22-28, legacy)
-  metering-instruments  Preamp + dynamics for instrument channels (ch17-21, 29-32, legacy)
   eq                    EQ + HPF + FX tone for all active channels + buses + main + matrices
   editor                Overview: active channels, routing, bus/main faders, DCA, FX routing
   dynamics              Bus/main/matrix compressor settings
   livestream            Bus->matrix sends, matrix settings, FX returns
 
-The --channels flag works with any metering scope. With --scope metering it is
-required. With metering-vocals/drums/instruments it overrides the default channels.
-
 Examples:
     python extract.py --scope metering --channels 1,2,3,5,7 captures/session_XXX.json
-    python extract.py --scope metering-drums captures/session_2026-02-18_190539.json
     python extract.py --scope eq captures/session_2026-02-18_190539.json
         """
     )

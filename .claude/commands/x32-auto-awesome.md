@@ -14,29 +14,31 @@ You are the **Session Orchestrator**. You persist for the entire session, keep h
 
 **No prompts — just go.** Gain mode is always **use** (load saved targets from `docs/VENUE.md`). Start the first pass immediately after reading docs.
 
-**Focused mode follows the full signal path.** Scoping to "drums" doesn't mean just drum channels — it means every stage the drums pass through: channels → FOH processing bus (07/08, FX inserts) → main bus + Cam L/R matrices. The target narrows *which sources* you're optimizing, not *how deep* you go.
+**Focused mode follows the full signal path.** Scoping to "drums" doesn't mean just drum channels — it means every stage the drums pass through: channels → FOH drum bus (find by name, with FX inserts) → main bus + Cam L/R matrices. The target narrows *which sources* you're optimizing, not *how deep* you go.
 
 **Channel classification is label-driven.** The editor classifies each active channel using its mixer label and `classify_channel()` from `scripts/analyze.py`. Channel numbers are NOT hardcoded — channels are grouped by what they are, not where they sit.
 
+**Bus identification is name-driven.** Find buses by their `name` field in the capture data, not by bus number. Bus numbers may change when routing is reorganized.
+
 **Section scope mapping** (by classification, not channel number):
-| Argument | Classification types | Signal Path (bus numbers are stable board config) |
+| Argument | Classification types | Signal Path (find buses by name in capture data) |
 |----------|---------------------|-------------|
-| `vocals` | vocal | Lead vocal: ch→main (FOH) + ch→bus 09→matrices. Others: ch→Voices bus (05/06)→main + matrices |
-| `speaking` | speaking | ch→Voices bus (05/06)→main (FOH) + matrices (livestream) |
-| `drums` | kick, snare, floor_tom, rack_tom, overhead | ch→drums bus (07/08)→main (FOH) + matrices (livestream) |
-| `instruments` | piano, keys, bass, electric_guitar, acoustic_guitar, flute, violin | ch→main (FOH) + ch→Acoustic (10)/Electronic (13)→matrices |
-| `piano` | piano | ch→main (FOH) + ch→Acoustic bus (10)→matrices |
-| `keys` or `keyboard` | keys | ch→main (FOH) + ch→Electronic bus (13)→matrices |
-| `bass` | bass | ch→main (FOH) + ch→Electronic bus (13)→matrices |
-| `guitar` | electric_guitar, acoustic_guitar | ch→main (FOH) + ch→Acoustic (10)/Electronic (13)→matrices |
-| `flute` | flute | ch→main (FOH) + ch→Acoustic bus (10)→matrices |
+| `vocals` | vocal | Lead vocal: ch→main (FOH) + ch→lead vocal bus (name matches "Tammy")→matrices. Others: ch→Voices bus (name matches "Voices")→main + matrices |
+| `speaking` | speaking | ch→Voices bus→main (FOH) + matrices (livestream) |
+| `drums` | kick, snare, floor_tom, rack_tom, overhead | ch→drums bus (name matches "drums")→main (FOH) + matrices (livestream) |
+| `instruments` | piano, keys, bass, electric_guitar, acoustic_guitar, flute, violin | ch→main (FOH) + ch→instrument buses (names matching "Acoustic"/"Electronic")→matrices |
+| `piano` | piano | ch→main (FOH) + ch→Acoustic bus→matrices |
+| `keys` or `keyboard` | keys | ch→main (FOH) + ch→Electronic bus→matrices |
+| `bass` | bass | ch→main (FOH) + ch→Electronic bus→matrices |
+| `guitar` | electric_guitar, acoustic_guitar | ch→main (FOH) + ch→Acoustic/Electronic bus→matrices |
+| `flute` | flute | ch→main (FOH) + ch→Acoustic bus→matrices |
 | `livestream` | (none — buses + matrices) | Downstream only — no channel changes |
 
-**FOH processing buses** also feed livestream. Vocal and drum channels typically route through processing buses (not directly to main LR). Check each channel's `routing.main_lr` flag in the capture data to verify.
-- **Bus 05/06 "Voices"**: Stereo Exciter (FX8) insert → main LR + Cam L/R matrices
-- **Bus 07/08 "drums"**: Ultimo Compressor (FX5) + Precision Limiter (FX6) inserts → main LR + Cam L/R matrices
-- **Bus 09**: Lead vocal livestream bus → Cam L/R matrices (not mains)
-- **Bus 12**: Decommissioned ("Not used"). Drums reach livestream via buses 07/08.
+**FOH processing buses** also feed livestream. Vocal and drum channels typically route through processing buses (not directly to main LR). Check each channel's `routing.main_lr` flag in the capture data to verify. Identify these buses by name:
+- **Voices bus** (name matches "Voices"): Has exciter FX insert → main LR + Cam L/R matrices
+- **Drums bus** (name matches "drums"): Has compressor + limiter FX inserts → main LR + Cam L/R matrices
+- **Lead vocal bus** (name matches "Tammy"): → Cam L/R matrices (not mains)
+- Any bus named "Not used" or similar is decommissioned — skip it.
 
 **IMPORTANT: All bus→matrix sends are PRE-FADER.** Bus faders do NOT affect livestream levels. To change what the livestream receives from a bus, adjust the bus-to-matrix send level (`/bus/XX/mix/03/level` for Cam L, `/bus/XX/mix/04/level` for Cam R), NOT the bus fader (`/bus/XX/mix/fader`). Bus faders only affect FOH via main LR.
 
@@ -70,7 +72,7 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 - **Track session state** — changes applied, user preferences, sections worked, flags
 - **Capture before each pass** — run `session_capture.py` yourself, pass the file path to editors
 - **Assemble context briefs** — slim, factual, no opinions (see format below)
-- **Spawn fresh editors** — one Task agent per optimization pass
+- **Spawn fresh editors** — one Agent per optimization pass
 - **Present summaries** — relay editor results to the engineer in plain English
 - **Flag cross-session concerns** — cumulative drift, repeated boosts in the same range, sections untouched
 - **Handle end-of-session learning** — CORRECTIONS.md updates
@@ -134,26 +136,32 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 **First pass** — RTA starts immediately, editor starts after capture:
 
 1. Clean up stale files: `rm -f /tmp/rta_*` (shell glob — lets the shell expand, matches permission pattern)
-2. Start **RTA gathering agent** immediately (Task agent, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
+2. Start **RTA gathering agent** immediately (Agent, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
 3. Run capture in parallel: `venv/bin/python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
 4. Capture done → **routing verification** then active channel list:
    a. Extract the `fx_routing` and channel insert data from the capture: `venv/bin/python scripts/extract.py --scope editor <capture_file>` — check `fx_routing` in the output.
    b. Cross-check FX routing against expected types (from `CLAUDE.md`). FX slot → expected type:
       - FX1: Ultimo Compressor (bass channel insert — tonal fuzz)
-      - FX2: Hall Reverb (CamVerb — bus 16 send/return)
-      - FX3: Hall Reverb (AudVerb — bus 15 send/return)
+      - FX2: Hall Reverb (CamVerb — reverb bus send/return)
+      - FX3: Hall Reverb (AudVerb — reverb bus send/return)
       - FX4: Dual Exciter (lead vocal channel insert)
-      - FX5: Ultimo Compressor (drums FOH bus 07 insert)
-      - FX6: Precision Limiter (drums FOH bus 08 insert)
+      - FX5: Ultimo Compressor (drums FOH bus L insert)
+      - FX6: Precision Limiter (drums FOH bus R insert)
       - FX7: Amp Sim (electric guitar channel insert)
-      - FX8: Stereo Exciter (Voices FOH bus 05/06 insert)
+      - FX8: Stereo Exciter (Voices FOH bus insert)
       Verify that each FX slot has the right type and is inserted on the right target. Use channel labels (not numbers) to identify which channel has a bass/guitar/lead vocal insert.
    c. **If any mismatch** (wrong insert target, missing insert, wrong FX type): **STOP and alert the engineer** before proceeding.
    d. Verify key routing flags: lead vocal `st=1` (direct to main), other vocals `st=0` (via Voices bus), drum channels `st=0` (via drums bus). Identify channels by label.
-   e. Extract `active_channels` from the same output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
-   f. **Classify channels**: Use each channel's mixer label to classify it (vocal, kick, snare, rack_tom, floor_tom, overhead, piano, keys, bass, electric_guitar, acoustic_guitar, flute, violin, speaking, etc.). Build channel lists per group for use in context brief and `--channels` flags.
+   e. **Capture consistency verification**:
+      - Read `metadata.query_failures.count` from the capture JSON (use `venv/bin/python -c "import json; d=json.load(open('<capture_file>')); print(d.get('metadata',{}).get('query_failures',{}).get('count',0))"`). Report the count to the engineer. Previous baseline was ~28 failures on 5s captures; the 60s initial capture should now show near zero.
+      - Run a quick 5s consistency snapshot: `venv/bin/python scripts/session_capture.py --duration 5 --output /tmp/consistency_check.json`
+      - Diff the two captures: `venv/bin/python scripts/diff_sessions.py <capture_file> /tmp/consistency_check.json --json`
+      - Check the diff for EQ/dynamics parameter mismatches (values changing between two captures taken seconds apart with no human changes). If the diff shows such changes, flag them as likely readback issues and warn the engineer that the response matching fix may not be working as expected. If the diff is clean (only meter data differences), report "capture consistency verified."
+      - Clean up: `rm -f /tmp/consistency_check.json`
+   f. Extract `active_channels` from the same output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
+   g. **Classify channels**: Use each channel's mixer label to classify it (vocal, kick, snare, rack_tom, floor_tom, overhead, piano, keys, bass, electric_guitar, acoustic_guitar, flute, violin, speaking, etc.). Build channel lists per group for use in context brief and `--channels` flags.
 5. Assemble context brief with **RTA status: pending**
-6. Spawn **editor** (Task agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
+6. Spawn **editor** (Agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
 7. Poll for quick pass to finish (5 min timeout):
    ```bash
    venv/bin/python scripts/poll_file.py --file /tmp/rta_quick_done --timeout 300
@@ -336,7 +344,7 @@ Common OSC addresses (replace XX with zero-padded number):
 2. If focused mode: identify which agent groups are in scope.
 3. **Immediately proceed to dispatching subagents** — do not read the capture or any extracts first.
 
-**Dispatch subagents using the Task tool (subagent_type: `general-purpose`).** Each agent runs its own `extract.py` command — you do NOT read data for them. **Send ALL Task calls in a single message so they run in parallel.**
+**Dispatch subagents using the Agent tool (subagent_type: `general-purpose`).** Each agent runs its own `extract.py` command — you do NOT read data for them. **Send ALL Agent calls in a single message so they run in parallel.**
 
 Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subagent Prompt Templates section below) + context brief data (gain targets, active channels) + capture file path.
 
@@ -360,10 +368,10 @@ venv/bin/python scripts/poll_file.py --file /tmp/rta_ready --timeout 600
 ```
 If poll_file.py exits with error (timeout), proceed without RTA data.
 Then send all 4 EQ agents in one message:
-4. Vocals EQ agent — `extract.py --scope eq` (focus: vocal + speaking channels, bus 05/06, bus 09, exciters)
-5. Drums EQ agent — `extract.py --scope eq` (focus: drum channels, bus 07/08)
-6. Instruments EQ agent — `extract.py --scope eq` (focus: instrument channels, bus 10, 13, amp sim)
-7. Downstream EQ agent — `extract.py --scope eq` (focus: main, matrices, buses 10, 13, 14, 15, 16)
+4. Vocals EQ agent — `extract.py --scope eq` (focus: vocal + speaking channels, Voices bus, lead vocal bus, exciters)
+5. Drums EQ agent — `extract.py --scope eq` (focus: drum channels, drums bus)
+6. Instruments EQ agent — `extract.py --scope eq` (focus: instrument channels, Acoustic + Electronic buses, amp sim)
+7. Downstream EQ agent — `extract.py --scope eq` (focus: main, matrices, remaining buses not covered by section agents)
 
 Tell each EQ agent which channel numbers + labels are in its scope (from your classification).
 
@@ -431,6 +439,8 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
 
 After channel-level convergence, dispatch upstream subagents for bus/main dynamics and livestream optimization. **Same coordination pattern as Phases 1-2** — you collect suggestions, deconflict, and batch-apply.
 
+**CRITICAL: You MUST spawn the Livestream agent as an actual Agent subagent — NEVER do livestream analysis inline.** The Livestream agent's job is to compare bus meter peaks against the VENUE.md target table and calculate send adjustments. Routing checks alone are not sufficient — the agent must read actual `meter_peak` values from the extract and compare each bus against its role's target dB level. If you skip the spawn, you skip the level balance analysis.
+
 1. Run a fresh capture: `venv/bin/python scripts/session_capture.py --duration 5`
 2. If RTA backup exists, splice into new capture (two separate Bash calls):
    ```bash
@@ -439,7 +449,7 @@ After channel-level convergence, dispatch upstream subagents for bus/main dynami
    ```bash
    venv/bin/python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
-3. **Full mix mode** — dispatch both in parallel:
+3. **Full mix mode** — spawn both as Agent subagents in parallel (two separate Agent tool calls in the same message):
    - Bus Dynamics agent — `extract.py --scope dynamics`
    - Livestream agent — `extract.py --scope livestream`
 4. **Focused mode**:
@@ -474,7 +484,7 @@ The editor passes channel lists to metering agents via `extract.py --scope meter
 
 ## Subagent Prompt Templates
 
-> The editor uses these as prompts when spawning analysis subagents via Task.
+> The editor uses these as prompts when spawning analysis subagents via Agent.
 
 ### Shared Preamble (prepend to every subagent)
 
@@ -515,12 +525,12 @@ For each active vocal channel:
 1. **Preamp/gain staging** — Compare the channel's current peak to the target range for vocals; nudge trim to bring it in range. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). If it should be active but is disabled, suggest enabling first. Threshold just below quietest useful signal. Gentle range for vocals (not full gate).
 3. **Compressor** — Check if enabled (`on` field). Compare signal level to threshold. Always squeezing = threshold too low. Never engaging = too high. Ratio 2:1-5:1. Mix 100% unless parallel compression is intentional. Adjust makeup gain if changing threshold/ratio.
-4. **Reverb sends** — Check sends to bus 15 (AudVerb/FOH reverb) and bus 16 (CamVerb/livestream reverb) in the channel's `sends` data.
+4. **Reverb sends** — Check sends to reverb buses (find by name: "AudVerb" for FOH reverb, "CamVerb" for livestream reverb) in the channel's `sends` data. Use the bus number from the capture data for OSC addresses.
    - Both should be `on: true` for vocals. If off, flag it.
    - Lead vocal typically gets moderate reverb. BGVs can have slightly more to push them back in the mix.
    - AudVerb and CamVerb send levels should be similar per channel unless intentionally different.
    - Compare across all vocal channels — levels should be relatively consistent unless a voice needs to sit further forward/back.
-   - OSC address: `/ch/XX/mix/15/level` (AudVerb), `/ch/XX/mix/16/level` (CamVerb)
+   - OSC address: `/ch/XX/mix/NN/level` where NN is the bus number from capture data
 
 ---
 
@@ -544,14 +554,14 @@ For each active drum channel:
 1. **Preamp/gain staging** — Compare the channel's current peak to the target range for drums; nudge trim to bring it in range. Skip channels with `meter_issue` — the engineer handles those.
 2. **Gate** — Check if enabled (`on` field). Enable for close mics if disabled. Full gate for close mics. Threshold below quietest hit. No gate on overheads.
 3. **Compressor** — Check if enabled (`on` field). Tame transients without killing punch. Faster attack for toms/kick, medium snare, gentler overheads.
-4. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
+4. **Reverb sends** — Check sends to reverb buses (find by name: "AudVerb" for FOH, "CamVerb" for livestream) in the channel's `sends` data. Use the bus number from the capture data for OSC addresses.
    - Drums generally need less reverb than vocals. Too much muddies transients.
    - Kick: little to no reverb (keeps it tight and punchy).
    - Snare: moderate reverb (adds body and sustain).
    - Toms: light-to-moderate reverb (helps sustain without washing out).
    - Overheads: little to no direct send — they already capture room ambience.
    - CamVerb sends may differ from AudVerb since the livestream has no natural room sound.
-   - OSC address: `/ch/XX/mix/15/level` (AudVerb), `/ch/XX/mix/16/level` (CamVerb)
+   - OSC address: `/ch/XX/mix/NN/level` where NN is the bus number from capture data
 
 ---
 
@@ -569,7 +579,7 @@ For each active instrument channel:
 2. **Gate** — Check if enabled (`on` field). Generally not needed. Only if bleed is a problem.
 3. **Compressor** — Check if enabled (`on` field). Ratio 2:1-5:1 most instruments. Bass 3:1-10:1. Piano 2:1-4:1.
 4. **Bass fuzz tone (FX1 — Ultimo Compressor)** — The bass channel uses an Ultimo Compressor as a channel insert for **tonal effect, not dynamics**. Identify the bass channel by label. Check the `insert` field — it should show `on: true, fx_slot: 1`. If the insert is off or on the wrong channel, flag it. Evaluate FX1 parameters in the `fx` section of the extract data (see `docs/TECHNICAL.md` for Ultimo parameter mapping). Use the bass `meter_peak` to judge how hard the signal is driving the Ultimo (more level = more saturation/fuzz). Does it give the bass presence and grit without muddying the low end? Complement the bass channel EQ and respect the bass/kick frequency lane separation. OSC: `/fx/1/par/XX`.
-5. **Reverb sends** — Check sends to bus 15 (AudVerb) and bus 16 (CamVerb) in the channel's `sends` data.
+5. **Reverb sends** — Check sends to reverb buses (find by name: "AudVerb" for FOH, "CamVerb" for livestream) in the channel's `sends` data. Use the bus number from the capture data for OSC addresses.
    - Piano: moderate reverb (adds space and sustain, especially for grand piano).
    - Acoustic guitar: light-to-moderate reverb.
    - Flute: moderate reverb (helps blend and adds air).
@@ -577,7 +587,7 @@ For each active instrument channel:
    - Bass: little to no reverb (keeps low end tight and defined).
    - Electric guitar: light reverb (amp sim already adds character).
    - CamVerb sends may differ from AudVerb since the livestream has no natural room sound.
-   - OSC address: `/ch/XX/mix/15/level` (AudVerb), `/ch/XX/mix/16/level` (CamVerb)
+   - OSC address: `/ch/XX/mix/NN/level` where NN is the bus number from capture data
 
 ---
 
@@ -604,50 +614,50 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 ### Vocals EQ Agent
 
-**Scope**: EQ + HPF for vocal channels, lead vocal livestream bus (09), and Voices FOH bus (05/06). Also evaluates exciter FX tone.
+**Scope**: EQ + HPF for vocal channels, lead vocal livestream bus (find by name, e.g. "Tammy"), and Voices FOH bus (find by name "Voices"). Also evaluates exciter FX tone.
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, bus05, bus06, bus09, FX exciters
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, Voices bus, lead vocal bus, FX exciters
 **Docs:** `docs/CHANNELS.md` (read for voice types, lead vs BGV), `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look up voice type (alto/tenor/baritone) for HPF tuning.
 
-**Signal path context:** The lead vocal routes directly to main LR (`st=1`) with FX4 exciter as channel insert — NOT in the Voices bus. Other vocals route through Voices bus (05/06) with FX8 exciter to both main LR and Cam L/R matrices. The lead vocal has a dedicated livestream bus (09) for independent matrix send level. Identify the lead vocal by checking which vocal channel has `routing.main_lr = true` and a channel insert (FX4).
+**Signal path context:** The lead vocal routes directly to main LR (`st=1`) with FX4 exciter as channel insert — NOT in the Voices bus. Other vocals route through the Voices bus (find by name) with FX8 exciter to both main LR and Cam L/R matrices. The lead vocal has a dedicated livestream bus (find by name, e.g. "Tammy") for independent matrix send level. Identify the lead vocal by checking which vocal channel has `routing.main_lr = true` and a channel insert (FX4).
 
 **Work order:**
 1. **Exciter tone** — Two exciters affect vocals:
    - **FX4 (lead vocal exciter)**: Insert on lead vocal channel. Affects both FOH and livestream. Dual Exciter. Target Timbre High (par/08) +10 to +15. OSC 0.6-0.65.
-   - **FX8 (Voices FOH bus insert)**: Insert on bus 05/06 — processes non-lead vocals going to FOH AND livestream (bus feeds both main LR and Cam L/R matrices). Check `type_name` in extract: if "Dual Exciter" use par/08 (Timbre High), if "Stereo Exciter" use par/04 (Timbre). Target 0 to +5 (warm, not bright — it affects every voice except lead). OSC 0.5-0.55.
+   - **FX8 (Voices FOH bus insert)**: Insert on Voices bus — processes non-lead vocals going to FOH AND livestream (bus feeds both main LR and Cam L/R matrices). Check `type_name` in extract: if "Dual Exciter" use par/08 (Timbre High), if "Stereo Exciter" use par/04 (Timbre). Target 0 to +5 (warm, not bright — it affects every voice except lead). OSC 0.5-0.55.
    - Formula: `osc_value = (timbre + 50) / 100`
 2. **Channel HPF** — On for all vocals. Alto: 120-150Hz. Baritone: 80-100Hz. Tenor: 100-120Hz. Look up voice type in CHANNELS.md.
 3. **Channel EQ** — Use RTA data. Gentle presence boosts only (stacked boosts across singers cause harshness). Lead vocal gets priority for presence range.
-4. **Lead vocal livestream bus EQ** (bus 09) — Shapes lead vocal for livestream only. Complement channel EQ and FX4 exciter.
-5. **Voices FOH bus EQ** (bus 05/06) — Shapes non-lead vocals for both FOH and livestream. Complement channel EQ and FX8 exciter — don't duplicate.
+4. **Lead vocal livestream bus EQ** (find by name, e.g. "Tammy") — Shapes lead vocal for livestream only. Complement channel EQ and FX4 exciter.
+5. **Voices FOH bus EQ** (find by name "Voices") — Shapes non-lead vocals for both FOH and livestream. Complement channel EQ and FX8 exciter — don't duplicate.
 
 ---
 
 ### Drums EQ Agent
 
-**Scope**: EQ + HPF for drum channels and drums FOH bus (07/08).
+**Scope**: EQ + HPF for drum channels and drums FOH bus (find by name "drums").
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, bus07, bus08
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, drums bus
 **Docs:** `docs/CHANNELS.md` (read for drum sizes, overhead positioning), `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 The editor provides your channel list + labels (e.g., "Your channels: ch22 Floor Tom, ch25 Snare, ch26 Kick, ch27 Hi-hats, ch28 Ride"). Read `docs/CHANNELS.md` to look up drum sizes and overhead positioning.
 
-**Signal path context:** Drum channels route through FOH processing buses 07/08 (with FX5 Ultimo Compressor + FX6 Precision Limiter inserts). These buses feed both main LR and Cam L/R matrices — EQ changes affect both FOH and livestream. Bus 12 is decommissioned.
+**Signal path context:** Drum channels route through the drums FOH bus (find by name "drums", with FX5 Ultimo Compressor + FX6 Precision Limiter inserts). This bus feeds both main LR and Cam L/R matrices — EQ changes affect both FOH and livestream.
 
 **Work order:**
 1. **Channel HPF** — On for all drums except kick. Snare: 80-100Hz. Toms: 60-80Hz. Overheads: 80-120Hz — check CHANNELS.md for whether these are spaced-pair overhead mics or dedicated cymbal close-mics. Keep full drum kit frequency range for overheads.
 2. **Channel EQ** — Use RTA data. Kick: sub punch (50-80Hz), click (2-5kHz). Snare: body (200Hz), crack (2-4kHz). Toms: fundamental + attack. Overheads: air, reduce bleed.
-3. **Drums FOH bus EQ** (bus 07/08) — Glue the kit. Complement channel EQ. Changes affect both FOH and livestream.
+3. **Drums FOH bus EQ** (find by name "drums") — Glue the kit. Complement channel EQ. Changes affect both FOH and livestream.
 
 ---
 
 ### Instruments EQ Agent
 
-**Scope**: EQ + HPF for instrument channels and buses (10 Acoustic, 13 Electronic). Also evaluates amp sim FX tone.
+**Scope**: EQ + HPF for instrument channels and instrument buses (find by name "Acoustic", "Electronic"). Also evaluates amp sim FX tone.
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, bus10, bus13, FX amp sim
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, Acoustic + Electronic buses, FX amp sim
 **Docs:** `docs/CHANNELS.md` (read for instrument details, stereo pairs/splits), `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look up instrument details (e.g., piano low/high string split, bass DI, etc.).
@@ -661,18 +671,18 @@ The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look 
    - Electric guitar: low warmth via amp sim, cut mids
    - Bass: don't fight kick in sub range
    - Flute: presence (2-4kHz), air (6-8kHz)
-4. **Bus EQ** — Acoustic bus (10): shape acoustic group. Electronic bus (13): shape electronic group.
+4. **Bus EQ** — Acoustic bus (find by name): shape acoustic group. Electronic bus (find by name): shape electronic group.
 
 ---
 
 ### Downstream EQ Agent
 
-**Scope**: Main bus EQ, matrix EQ (livestream + house), remaining buses not covered by section agents (ambient, CamVerb, AudVerb, Acoustic 10, Electronic 13), and **reverb FX engine parameters** (FX2 CamVerb, FX3 AudVerb).
+**Scope**: Main bus EQ, matrix EQ (livestream + house), remaining buses not covered by section agents (ambient, CamVerb, AudVerb, Acoustic, Electronic), and **reverb FX engine parameters** (FX2 CamVerb, FX3 AudVerb).
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not in {05, 06, 07, 08, 09}
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not owned by Vocals/Drums EQ agents (i.e., not Voices, drums, or lead vocal buses)
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
-**Note:** FOH processing bus EQ (Voices 05/06, drums 07/08) is now handled by the Vocals EQ and Drums EQ agents respectively. Tammy voice bus (09) is handled by Vocals EQ agent. Bus 12 is decommissioned.
+**Note:** FOH processing bus EQ (Voices bus, drums bus) is handled by the Vocals EQ and Drums EQ agents respectively. Lead vocal bus (e.g. "Tammy") is handled by Vocals EQ agent. Any bus named "Not used" is decommissioned — skip it.
 
 **Work order:**
 1. **Main bus EQ** — Respect existing room corrections (LF shelf cuts, HF presence cut). Only suggest changes if something is clearly wrong or fighting upstream corrections. Check VENUE.md for known room problems.
@@ -681,11 +691,11 @@ The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look 
    - Mono House (mtx01): room PA supplement. Similar to main but mono-compatible.
    - Foyer (mtx02): background listening. Roll off lows, gentle presence.
    - Assisted Listening (mtx05): inactive, skip.
-3. **Livestream bus EQ** — Acoustic bus (10), Electronic bus (13). Shape for livestream matrices.
+3. **Livestream bus EQ** — Acoustic bus, Electronic bus (find by name). Shape for livestream matrices.
 4. **Remaining bus EQ** — Ambient bus, CamVerb, AudVerb. Shape for their purpose (reverb return EQ should complement, not duplicate, channel reverb sends).
 5. **Reverb FX parameters** — Evaluate the Hall Reverb engine settings for both reverb FX slots. Parameters are in the `fx` section of the extract data. See `docs/TECHNICAL.md` for Hall Reverb parameter mapping (par/01-12).
-   - **FX3 — AudVerb** (bus 15 → FX3, fxrtn03 → main LR): FOH reverb. Should complement the room acoustics — check VENUE.md for room character. Decay and size should match the room (too long washes out speech intelligibility, too short sounds dry). Damping should tame high-frequency buildup. Pre-delay helps preserve vocal clarity.
-   - **FX2 — CamVerb** (bus 16 → FX2, fxrtn02 → livestream matrices): Livestream reverb. Livestream has NO natural room sound, so this reverb creates the entire sense of space. Can be slightly longer/wetter than AudVerb. Higher diffusion smooths out the tail for headphone/speaker listeners. Hi-cut can be lower than AudVerb since livestream doesn't need air frequencies to fill a room.
+   - **FX3 — AudVerb** (AudVerb bus → FX3, fxrtn03 → main LR): FOH reverb. Should complement the room acoustics — check VENUE.md for room character. Decay and size should match the room (too long washes out speech intelligibility, too short sounds dry). Damping should tame high-frequency buildup. Pre-delay helps preserve vocal clarity.
+   - **FX2 — CamVerb** (CamVerb bus → FX2, fxrtn02 → livestream matrices): Livestream reverb. Livestream has NO natural room sound, so this reverb creates the entire sense of space. Can be slightly longer/wetter than AudVerb. Higher diffusion smooths out the tail for headphone/speaker listeners. Hi-cut can be lower than AudVerb since livestream doesn't need air frequencies to fill a room.
    - **Relationship**: CamVerb and AudVerb serve different audiences. Don't assume they should match — the room already adds reverb to FOH, so AudVerb supplements while CamVerb creates from scratch.
    - OSC addresses: `/fx/2/par/XX` (CamVerb), `/fx/3/par/XX` (AudVerb). Values are 0.0-1.0 normalized.
 
@@ -700,17 +710,19 @@ The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look 
 **Docs:** `docs/CHANNELS.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Work order:**
-1. **Drum FOH bus FX inserts** (bus 07/08):
-   - **FX5 — Ultimo Compressor** (type 17): Insert on bus 07 (drums L). This is the primary drum dynamics processing for FOH. Evaluate input gain, attack, release, output gain, ratio. See TECHNICAL.md for Ultimo parameter mapping. Tame transients without killing punch — drums need attack to cut through.
-   - **FX6 — Precision Limiter** (type 11): Insert on bus 08 (drums R). Evaluate input/output gain, squeeze, knee, attack, release. Should catch peaks, not constantly limiting.
-   - These two should work together coherently (one compresses, one limits). If the built-in bus compressor on 07/08 is also enabled, check for over-processing — three stages of dynamics is likely too much.
-2. **FOH processing bus compressors** (Voices 05/06, drums 07/08):
-   - Voices (05/06): last dynamics stage before mains for vocals. Has Stereo Exciter (FX8) insert but that's tonal, not dynamics — compressor here is independent.
-   - drums (07/08): already has Ultimo + Limiter inserts (step 1). Built-in bus compressor may not be needed. Only enable if the FX inserts aren't providing enough control.
-3. **Livestream bus compressors** (Tammy voice 09, Acoustic 10, Electronic 13):
+
+Identify buses by their `name` field in the dynamics extract — do not rely on bus numbers.
+
+1. **Drum FOH bus FX inserts** (find the bus named "drums" or "Drums"):
+   - **FX5 — Ultimo Compressor** (type 17): Insert on drums bus L. This is the primary drum dynamics processing for FOH. Evaluate input gain, attack, release, output gain, ratio. See TECHNICAL.md for Ultimo parameter mapping. Tame transients without killing punch — drums need attack to cut through.
+   - **FX6 — Precision Limiter** (type 11): Insert on drums bus R. Evaluate input/output gain, squeeze, knee, attack, release. Should catch peaks, not constantly limiting.
+   - These two should work together coherently (one compresses, one limits). If the built-in bus compressor is also enabled, check for over-processing — three stages of dynamics is likely too much.
+2. **FOH processing bus compressors** (find buses named "Voices" and "drums"):
+   - Voices bus: last dynamics stage before mains for vocals. Has Stereo Exciter (FX8) insert but that's tonal, not dynamics — compressor here is independent.
+   - Drums bus: already has Ultimo + Limiter inserts (step 1). Built-in bus compressor may not be needed. Only enable if the FX inserts aren't providing enough control.
+3. **Livestream bus compressors** (find buses matching Vocals, Instruments roles by name — e.g., "Tammy", "Acoustic", "Electronic"):
    - Glue each group. Threshold should engage on peaks, not constant squeeze.
-   - Bus 09 is Tammy only — compressor here shapes her livestream dynamics independently.
-   - Bus 12 is decommissioned. Drums reach livestream via FOH buses 07/08 (step 1/2).
+   - The lead vocal bus (e.g., "Tammy") shapes her livestream dynamics independently.
    - Check ratio, attack, release, knee, makeup gain.
 4. **Master compressor**:
    - Gentle, catching peaks. Not slamming.
@@ -724,28 +736,32 @@ The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look 
 
 **Scope**: Livestream send level balance and matrix compressors. No channel-level, bus EQ, or bus compressor work.
 
-**Data:**
-- `venv/bin/python scripts/extract.py --scope livestream <capture_file>` — bus→matrix sends, matrix compressors/EQ
-- Also read the **full capture file** directly for channel-level data (preamp gain, fader, send levels to each bus). You need this to estimate relative signal strength per bus.
+**Primary job: Compare actual bus meter peaks against VENUE.md target levels and suggest send adjustments.** Routing assessment alone is NOT sufficient — you must produce a table showing each bus's actual peak vs. its target and the delta.
 
-**Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/TECHNICAL.md`
+**Data:**
+- `venv/bin/python scripts/extract.py --scope livestream <capture_file>` — bus→matrix sends, matrix compressors/EQ, bus meter peaks
+
+**Docs:** `docs/CHANNELS.md`, `docs/VENUE.md` (YOU MUST read the Livestream Bus Targets table), `docs/TECHNICAL.md`
 
 The engineer can't hear the livestream from the room — optimize by the numbers.
 
-**Signal path** — Trace every path to livestream matrices (Cam L / Cam R):
-- Voices FOH bus (05/06) → matrices (vocals ch2-7, with FX8 exciter)
-- drums FOH bus (07/08) → matrices (drums, with FX5/FX6 processing)
-- Tammy voice bus (09) → matrices (Tammy only, independent level)
-- Acoustic bus (10) → matrices (piano, acoustic guitar, flute, violin)
-- Electronic bus (13) → matrices (keys, electric guitar, bass)
-- Ambient bus (14) → matrices (room mics)
-- CamVerb bus (16) → matrices (livestream reverb)
+**Signal path** — The extract includes every bus with its `name` field and `matrix_sends`. Classify each bus by name and match to role targets in `docs/VENUE.md`:
+- Read all buses in the extract that have non-zero matrix sends to Cam L (mtx03) or Cam R (mtx04)
+- Match each bus name to a role using the name patterns in VENUE.md (e.g., a bus named "Voices" matches the Vocals role)
+- Buses with no name match are unknown — report them but do not adjust
 - Main LR → matrices: **OFF** (main does not feed livestream)
 
 **Work order:**
-1. **Estimate signal strength per bus** — Read the full capture to find which channels feed each livestream bus. For each channel, note preamp gain and the channel's send level to that bus. More channels at higher gain/send = hotter bus signal. Vocals typically run hotter on buses than instruments because they need more amplification to cut through the room acoustically — this means vocal buses are already loud before matrix sends.
+1. **Read bus meter peaks and classify by name** — Each bus in the livestream extract has a `name` and `meter_peak` field. Classify each bus by matching its name to the role/name patterns in `docs/VENUE.md`. Compare meter peaks against the target dB for the matched role. **You MUST produce a comparison table** like:
+   ```
+   Bus Name | Role | Actual Peak | Target | Delta
+   Voices   | Vocals | -15.2dB  | -18dB  | +2.8dB (hot)
+   Drums    | Drums  | -18.1dB  | -16dB  | -2.1dB (quiet)
+   ...
+   ```
+   If `meter_peak` is missing (old capture without bus metering), fall back to estimating signal strength from channel data in the full capture.
 
-2. **Set matrix send levels** — Read each bus's `matrix_sends` for mtx03 (Cam L) and mtx04 (Cam R). **Bus→matrix sends are PRE-FADER — bus faders have zero effect on livestream levels. NEVER adjust bus faders for livestream purposes.** Adjust only the bus-to-matrix send levels: `/bus/XX/mix/03/level` (Cam L) and `/bus/XX/mix/04/level` (Cam R). **Do NOT use a fixed dB offset rule.** Instead, compensate for bus signal strength: buses carrying hotter signals (typically vocals) need lower matrix sends, and buses carrying quieter signals (typically instruments) need higher matrix sends. The goal is a balanced livestream mix, not matching the FOH balance.
+2. **Set matrix send levels** — Read each bus's `matrix_sends` for mtx03 (Cam L) and mtx04 (Cam R). **Bus→matrix sends are PRE-FADER — bus faders have zero effect on livestream levels. NEVER adjust bus faders for livestream purposes.** Adjust only the bus-to-matrix send levels: `/bus/XX/mix/03/level` (Cam L) and `/bus/XX/mix/04/level` (Cam R). Calculate matrix send adjustments based on how far each bus meter peak is from its target in VENUE.md. Buses running hot relative to target get lower sends; quiet buses get higher sends. Use 2-3dB increments, cap at 5dB per pass.
 
 3. **Matrix compressors / limiters** —
 

@@ -38,11 +38,10 @@ from common import (
 METER_CHANNEL_PRE = 0
 INACTIVE_THRESHOLD_RAW = 0.0005
 
-# On/off queries need more retries — the mixer drops ~46% of individual responses,
-# and defaulting to 0 (off) causes false negatives (compressor/HPF/gate/EQ reported
-# as off when actually on). 10 retries gives <0.05% failure rate.
-ON_OFF_RETRIES = 10
-ON_OFF_DELAY = 0.1
+# On/off queries: with per-address response matching, the 46% misattribution
+# rate is eliminated. Retries now only cover UDP packet loss.
+ON_OFF_RETRIES = 3
+ON_OFF_DELAY = 0.05
 
 
 async def reliable_on_off_query(mixer, address: str, label: str = "",
@@ -545,27 +544,77 @@ def parse_meter_blob(data: bytes) -> Dict[str, float]:
     return result
 
 
-async def capture_meters(mixer_ip: str, mixer_port: int, duration: float) -> Dict:
+def parse_bus_meter_blob(data: bytes) -> Dict[str, float]:
+    """Parse /meters/2 blob to get bus and main peak values.
+
+    Same LE float32 format as channel meters. Layout:
+    - Index 0: header (skip)
+    - Indices 1-16: Bus 1-16
+    - Indices 17-18: Main L/R
+    """
+    result = {}
+    try:
+        if len(data) < 4:
+            return result
+        count = struct.unpack('<i', data[:4])[0]
+        num_floats = min(count, (len(data) - 4) // 4)
+        values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
+
+        # Buses 1-16 at indices 1-16
+        for i in range(min(16, num_floats - 1)):
+            result[f'bus{i + 1:02d}'] = values[i + 1]
+
+        # Main L/R at indices 17-18
+        if num_floats > 17:
+            result['main_L'] = values[17]
+        if num_floats > 18:
+            result['main_R'] = values[18]
+    except Exception:
+        pass
+    return result
+
+
+async def capture_meters(mixer_ip: str, mixer_port: int, duration: float) -> tuple:
     """Capture meter data for gain staging analysis.
 
     Uses /meters request-polling (not /batchsubscribe which is unreliable).
+    Returns (channel_peaks, bus_peaks).
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(0.1)
     sock.bind(('', 0))
 
     channel_peaks = {f'ch{i:02d}': 0.0 for i in range(1, 33)}
+    bus_peaks = {f'bus{i:02d}': 0.0 for i in range(1, 17)}
 
     def send_xremote():
         msg = b'/xremote\x00\x00\x00\x00,\x00\x00\x00'
         sock.sendto(msg, (mixer_ip, mixer_port))
 
-    def request_meters():
+    def request_channel_meters():
         # /meters ,siii '/meters/0' 0 0 3
         msg = b'/meters\x00,siii\x00\x00\x00'
         msg += b'/meters/0\x00\x00\x00'
         msg += struct.pack('>iii', 0, 0, 3)
         sock.sendto(msg, (mixer_ip, mixer_port))
+
+    def request_bus_meters():
+        # /meters ,siii '/meters/2' 0 0 3
+        msg = b'/meters\x00,siii\x00\x00\x00'
+        msg += b'/meters/2\x00\x00\x00'
+        msg += struct.pack('>iii', 0, 0, 3)
+        sock.sendto(msg, (mixer_ip, mixer_port))
+
+    def extract_blob(data: bytes) -> Optional[bytes]:
+        """Extract blob data from an OSC meter response."""
+        blob_start = data.find(b',b')
+        if blob_start <= 0:
+            return None
+        len_start = blob_start + 4
+        while len_start % 4 != 0:
+            len_start += 1
+        blob_len = struct.unpack('>i', data[len_start:len_start+4])[0]
+        return data[len_start+4:len_start+4+blob_len]
 
     start_time = time.time()
     last_request = 0
@@ -578,25 +627,26 @@ async def capture_meters(mixer_ip: str, mixer_port: int, duration: float) -> Dic
 
             if current - last_request > 0.05:
                 send_xremote()
-                request_meters()
+                request_channel_meters()
+                request_bus_meters()
                 last_request = current
 
             try:
                 data, _ = sock.recvfrom(8192)
                 if data.startswith(b'/meters/0'):
-                    # Find blob data
-                    blob_start = data.find(b',b')
-                    if blob_start > 0:
-                        len_start = blob_start + 4
-                        while len_start % 4 != 0:
-                            len_start += 1
-                        blob_len = struct.unpack('>i', data[len_start:len_start+4])[0]
-                        blob_data = data[len_start+4:len_start+4+blob_len]
-
+                    blob_data = extract_blob(data)
+                    if blob_data:
                         peaks = parse_meter_blob(blob_data)
                         for ch, val in peaks.items():
                             if val > channel_peaks[ch]:
                                 channel_peaks[ch] = val
+                elif data.startswith(b'/meters/2'):
+                    blob_data = extract_blob(data)
+                    if blob_data:
+                        peaks = parse_bus_meter_blob(blob_data)
+                        for key, val in peaks.items():
+                            if key in bus_peaks and val > bus_peaks[key]:
+                                bus_peaks[key] = val
             except socket.timeout:
                 pass
 
@@ -604,7 +654,7 @@ async def capture_meters(mixer_ip: str, mixer_port: int, duration: float) -> Dic
     finally:
         sock.close()
 
-    return channel_peaks
+    return channel_peaks, bus_peaks
 
 
 def analyze_gain_staging(channel_peaks: Dict, channel_names: Dict) -> Dict:
@@ -839,8 +889,8 @@ Example:
         result["dcas"] = await capture_dca_settings(mixer, failures=query_failures)
         print("  DCAs 1-8 done", file=sys.stderr)
 
-        # Capture meters
-        channel_peaks = await capture_meters(
+        # Capture meters (channels + buses)
+        channel_peaks, bus_peaks = await capture_meters(
             config["mixer_ip"], config["mixer_port"], args.duration
         )
 
@@ -853,6 +903,11 @@ Example:
         # Analyze gain staging
         print("Analyzing gain staging...", file=sys.stderr)
         result["analysis"]["gain_staging"] = analyze_gain_staging(channel_peaks, channel_names)
+
+        # Store bus meter peaks (for livestream agent)
+        result["analysis"]["bus_peaks"] = {
+            bus: round(peak, 6) for bus, peak in bus_peaks.items() if peak > 0
+        }
 
         # Add FX routing summary
         fx_routing = {}

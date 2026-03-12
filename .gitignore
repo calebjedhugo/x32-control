@@ -17,6 +17,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!lib/behringer_mixer/
 lib64/
 parts/
 sdist/

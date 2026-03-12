@@ -43,18 +43,18 @@ If something fails or data looks wrong:
 
 | FX Slot | Effect | Routed to |
 |---------|--------|-----------|
-| FX 1 | Ultimo Compressor | Bass (ch31) channel insert — tonal fuzz, not dynamics |
-| FX 2 | Hall Reverb (CamVerb) | Bus 16 send → fxrtn02 → livestream matrices |
-| FX 3 | Hall Reverb (AudVerb) | Bus 15 send → fxrtn03 → main LR (FOH) |
+| FX 1 | Ultimo Compressor | Bass channel insert — tonal fuzz, not dynamics |
+| FX 2 | Hall Reverb (CamVerb) | CamVerb bus send → fxrtn02 → livestream matrices |
+| FX 3 | Hall Reverb (AudVerb) | AudVerb bus send → fxrtn03 → main LR (FOH) |
 | FX 4 | Dual Exciter | Tammy only (channel insert) |
-| FX 5 | Ultimo Compressor | Drums FOH bus 07 (insert) |
-| FX 6 | Precision Limiter | Drums FOH bus 08 (insert) |
-| FX 7 | Amp Sim | Electric guitar (ch32) |
-| FX 8 | Stereo Exciter | Voices FOH bus 05/06 (insert — vocals ch2-7 to FOH + livestream) |
+| FX 5 | Ultimo Compressor | Drums FOH bus (insert) |
+| FX 6 | Precision Limiter | Drums FOH bus (insert) |
+| FX 7 | Amp Sim | Electric guitar channel insert |
+| FX 8 | Stereo Exciter | Voices FOH bus (insert — non-lead vocals to FOH + livestream) |
 
 **Exciter Timbre**: -50 to +50 scale (0 = neutral)
 - Tammy (FX4): +10 to +15 (brighter to cut through — affects FOH and livestream)
-- Voices FOH bus (FX8): 0 to +5 (warm — affects ch2-7 vocals to both FOH and livestream)
+- Voices FOH bus (FX8): 0 to +5 (warm — affects non-lead vocals to both FOH and livestream)
 
 ## Session Workflow
 
