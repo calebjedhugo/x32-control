@@ -72,7 +72,7 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 - **Track session state** — changes applied, user preferences, sections worked, flags
 - **Capture before each pass** — run `session_capture.py` yourself, pass the file path to editors
 - **Assemble context briefs** — slim, factual, no opinions (see format below)
-- **Spawn fresh editors** — one Agent per optimization pass
+- **Spawn fresh editors** — one Agent (`model: "sonnet"`) per optimization pass
 - **Present summaries** — relay editor results to the engineer in plain English
 - **Flag cross-session concerns** — cumulative drift, repeated boosts in the same range, sections untouched
 - **Handle end-of-session learning** — CORRECTIONS.md updates
@@ -161,7 +161,7 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
    f. Extract `active_channels` from the same output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
    g. **Classify channels**: Use each channel's mixer label to classify it (vocal, kick, snare, rack_tom, floor_tom, overhead, piano, keys, bass, electric_guitar, acoustic_guitar, flute, violin, speaking, etc.). Build channel lists per group for use in context brief and `--channels` flags.
 5. Assemble context brief with **RTA status: pending**
-6. Spawn **editor** (Agent, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
+6. Spawn **editor** (Agent, `model: "sonnet"`, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
 7. Poll for quick pass to finish (5 min timeout):
    ```bash
    venv/bin/python scripts/poll_file.py --file /tmp/rta_quick_done --timeout 300
@@ -205,7 +205,7 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
    ```
 3. Get active channels: `venv/bin/python scripts/extract.py --scope editor <new_capture_file>` — extract only `active_channels`, discard the rest.
 4. Assemble context brief with **RTA status: present in capture**
-5. Spawn editor
+5. Spawn editor (Agent, `model: "sonnet"`)
 6. Relay summary, update changelog
 
 If RTA gathering failed or was skipped entirely (no musicians playing during capture), use **RTA status: not available**.
@@ -366,6 +366,12 @@ The subagent writes its detailed suggestions to the output file. Its stdout resp
 **Step 4 — Collect results:** Use the **Read tool** to read each `/tmp/agent_output_*.txt` file. These contain the full suggestions with raw OSC values for batch assembly.
 
 **Parallel dispatch:** Send **all Bash calls in one message** — they run concurrently. For 3 metering agents, send 3 Bash calls in one message, each with timeout 600000. For 4 EQ agents, send 4 Bash calls in one message. Results return when all complete.
+
+**Model selection** — add the `--model` flag based on agent type:
+- Metering agents (vocals/drums/instruments): `--model haiku`
+- EQ agents (vocals/drums/instruments/downstream): `--model sonnet`
+- Bus Dynamics agent: `--model sonnet`
+- Livestream agent: `--model sonnet`
 
 **Rules:**
 - **One `claude -p` per Bash call.** Never put two commands in one call.
