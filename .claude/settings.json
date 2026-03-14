@@ -32,6 +32,10 @@
       "Write(//tmp/metering_changes*)",
       "Write(//tmp/eq_changes*)",
       "Write(//tmp/upstream_changes*)",
+      "Write(//tmp/agent_prompt_*)",
+      "Write(//tmp/agent_output_*)",
+      "Bash(rm -f /tmp/agent_prompt_*)",
+      "Bash(rm -f /tmp/agent_output_*)",
       "Write(/captures/*)",
       "Edit(/captures/*)",
       "Edit(/docs/CORRECTIONS.md)"

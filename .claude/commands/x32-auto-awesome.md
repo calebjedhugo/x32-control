@@ -336,6 +336,52 @@ Common OSC addresses (replace XX with zero-padded number):
 - FX param: `/fx/N/par/XX` (01-64)
 - FX return fader: `/fxrtn/XX/mix/fader`
 
+### Sub-Agent Dispatch Pattern
+
+**The editor does NOT have access to the Agent tool.** To dispatch analysis subagents, use `claude -p` via the Bash tool.
+
+**Naming convention**: All prompt files MUST use the prefix `agent_prompt_` in `/tmp/`. This matches the pre-approved Write permission pattern. Examples:
+- `/tmp/agent_prompt_vocals_metering.txt`
+- `/tmp/agent_prompt_drums_eq.txt`
+- `/tmp/agent_prompt_livestream.txt`
+
+**Step 1 — Assemble the prompt:** Shared Preamble + Agent-Specific Template (from the Subagent Prompt Templates section below) + context brief data (gain targets, active channels) + capture file path + output file path.
+
+Each subagent prompt MUST include an `output_file` path telling the agent where to write its suggestions. Use the naming convention `/tmp/agent_output_<name>.txt`:
+- `/tmp/agent_output_vocals_metering.txt`
+- `/tmp/agent_output_drums_eq.txt`
+- `/tmp/agent_output_livestream.txt`
+
+**Step 2 — Write the prompt file:** Use the **Write tool** (not Bash echo/cat) to save the assembled prompt:
+```
+Write tool → /tmp/agent_prompt_vocals_metering.txt
+```
+
+**Step 3 — Dispatch:** Run a **single Bash call per agent**, with a 10-minute timeout:
+```bash
+claude -p --output-format text < /tmp/agent_prompt_vocals_metering.txt
+```
+The subagent writes its detailed suggestions to the output file. Its stdout response (captured by Bash) is just a confirmation with the file path.
+
+**Step 4 — Collect results:** Use the **Read tool** to read each `/tmp/agent_output_*.txt` file. These contain the full suggestions with raw OSC values for batch assembly.
+
+**Parallel dispatch:** Send **all Bash calls in one message** — they run concurrently. For 3 metering agents, send 3 Bash calls in one message, each with timeout 600000. For 4 EQ agents, send 4 Bash calls in one message. Results return when all complete.
+
+**Rules:**
+- **One `claude -p` per Bash call.** Never put two commands in one call.
+- **No shell redirections** (`>`, `2>&1`). Output is captured by the Bash tool automatically.
+- **No chaining** (`&&`, `;`, `|`). No backgrounding (`&`) or `wait`.
+- **No `echo` piping.** Always use the Write tool to create the prompt file, then `< /tmp/agent_prompt_*.txt` to feed it.
+- **Timeout: 600000** (10 minutes) on every `claude -p` Bash call.
+
+**Cleanup** — after collecting all suggestions for a phase:
+```bash
+rm -f /tmp/agent_prompt_*
+```
+```bash
+rm -f /tmp/agent_output_*
+```
+
 ### Phase 1: Assess & Dispatch
 
 **YOU MUST spawn subagents. This is your primary job.** Do not analyze the mix yourself — dispatch specialists and coordinate their output.
@@ -344,9 +390,7 @@ Common OSC addresses (replace XX with zero-padded number):
 2. If focused mode: identify which agent groups are in scope.
 3. **Immediately proceed to dispatching subagents** — do not read the capture or any extracts first.
 
-**Dispatch subagents using the Agent tool (subagent_type: `general-purpose`).** Each agent runs its own `extract.py` command — you do NOT read data for them. **Send ALL Agent calls in a single message so they run in parallel.**
-
-Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subagent Prompt Templates section below) + context brief data (gain targets, active channels) + capture file path.
+**Dispatch subagents via `claude -p` through the Bash tool** (see Sub-Agent Dispatch Pattern above). Each agent runs its own `extract.py` command — you do NOT read data for them.
 
 **Two-phase dispatch** — check the context brief's **RTA status** field:
 
@@ -354,7 +398,7 @@ Each subagent prompt = Shared Preamble + Agent-Specific Template (from the Subag
 - **RTA status: present in capture** → dispatch all 7 immediately (subsequent passes)
 - **RTA status: not available** → dispatch all 7 immediately (EQ agents can still evaluate HPF, venue rules, FX tone, bus/matrix EQ — they just won't have RTA-informed channel EQ suggestions and will note missing data)
 
-**Step 1: Dispatch metering agents NOW** (send all in one message):
+**Step 1: Dispatch metering agents NOW** (all Bash calls in one message):
 Use `--scope metering --channels <list>` with the channel numbers from your classification:
 1. Vocals metering agent — `extract.py --scope metering --channels <vocal_channels>` (e.g., `--channels 1,2,3,5,7`)
 2. Drums metering agent — `extract.py --scope metering --channels <drum_channels>` (e.g., `--channels 22,23,24,25,26,27,28`)
@@ -367,7 +411,7 @@ Include in each subagent's prompt: "Your channels: ch1 Tammy, ch5 Sara, ch7 Kat"
 venv/bin/python scripts/poll_file.py --file /tmp/rta_ready --timeout 600
 ```
 If poll_file.py exits with error (timeout), proceed without RTA data.
-Then send all 4 EQ agents in one message:
+Then dispatch all 4 EQ agents (all Bash calls in one message):
 4. Vocals EQ agent — `extract.py --scope eq` (focus: vocal + speaking channels, Voices bus, lead vocal bus, exciters)
 5. Drums EQ agent — `extract.py --scope eq` (focus: drum channels, drums bus)
 6. Instruments EQ agent — `extract.py --scope eq` (focus: instrument channels, Acoustic + Electronic buses, amp sim)
@@ -393,7 +437,7 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
 
 **Stage 1: Metering batch** (as soon as metering agents return — don't wait for EQ):
 
-1. Collect metering agent suggestions (gates, compressors, reverb sends, and preamp trim).
+1. Read each metering agent's output file via the Read tool to collect suggestions (gates, compressors, reverb sends, and preamp trim).
 2. Deconflict contradictory suggestions between metering agents for overlapping channels.
 3. Append all changes to the changelog file.
 4. Write to batch file and apply:
@@ -407,7 +451,7 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
    Calculate each offset as `new_trim_dB - old_trim_dB` from the agent's suggestion (agents provide both raw and human-readable dB equivalents). Example: `venv/bin/python scripts/update_peaks.py captures/session_XXX.json 5:+3.0 17:-2.0`
 
 **Stage 2: EQ batch** (after EQ agents return):
-1. Collect EQ agent suggestions (HPF, EQ bands, FX tone).
+1. Read each EQ agent's output file via the Read tool to collect suggestions (HPF, EQ bands, FX tone).
 2. Deconflict:
    - Stacked EQ boosts across sections (e.g., vocals and instruments both boosted at 3kHz)
    - Cross-section interactions (e.g., kick and bass both boosted in sub range)
@@ -428,18 +472,19 @@ Write the changelog BEFORE running the batch (batch deletes its input file).
    venv/bin/python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
    If `/tmp/rta_batch_backup.jsonl` doesn't exist (RTA was unavailable), skip this step — EQ agents will note missing RTA data.
-3. Assemble updated context brief (updated changelog from Phase 2). **Dispatch all 7 subagents in parallel** with updated context brief + new capture path. Never reuse a subagent from a previous pass.
-4. If new subagents return actionable suggestions, deconflict and apply via batch.
-5. **Repeat until converged** (no new actionable suggestions) or iteration cap:
+3. Clean up previous iteration's files: `rm -f /tmp/agent_prompt_*` and `rm -f /tmp/agent_output_*`
+4. Assemble updated context brief (updated changelog from Phase 2). **Dispatch all 7 subagents in parallel via `claude -p`** (see Sub-Agent Dispatch Pattern) with updated context brief + new capture path. Never reuse a subagent from a previous pass.
+5. Read agent output files, deconflict, and apply via batch.
+6. **Repeat until converged** (no new actionable suggestions) or iteration cap:
    - Full mix mode: **max 4 iterations**
    - Focused mode: **max 6 iterations**
-6. If after 3 iterations subagents are still finding issues, check for oscillation (chasing the same frequency range). If so, stop and report.
+7. If after 3 iterations subagents are still finding issues, check for oscillation (chasing the same frequency range). If so, stop and report.
 
 ### Phase 4: Upstream Work
 
 After channel-level convergence, dispatch upstream subagents for bus/main dynamics and livestream optimization. **Same coordination pattern as Phases 1-2** — you collect suggestions, deconflict, and batch-apply.
 
-**CRITICAL: You MUST spawn the Livestream agent as an actual Agent subagent — NEVER do livestream analysis inline.** The Livestream agent's job is to compare bus meter peaks against the VENUE.md target table and calculate send adjustments. Routing checks alone are not sufficient — the agent must read actual `meter_peak` values from the extract and compare each bus against its role's target dB level. If you skip the spawn, you skip the level balance analysis.
+**CRITICAL: You MUST dispatch the Livestream agent via `claude -p` — NEVER do livestream analysis inline.** The Livestream agent's job is to compare bus meter peaks against the VENUE.md target table and calculate send adjustments. Routing checks alone are not sufficient — the agent must read actual `meter_peak` values from the extract and compare each bus against its role's target dB level. If you skip the dispatch, you skip the level balance analysis.
 
 1. Run a fresh capture: `venv/bin/python scripts/session_capture.py --duration 5`
 2. If RTA backup exists, splice into new capture (two separate Bash calls):
@@ -449,16 +494,23 @@ After channel-level convergence, dispatch upstream subagents for bus/main dynami
    ```bash
    venv/bin/python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
    ```
-3. **Full mix mode** — spawn both as Agent subagents in parallel (two separate Agent tool calls in the same message):
+3. **Full mix mode** — dispatch both via `claude -p` in parallel (both Bash calls in one message):
    - Bus Dynamics agent — `extract.py --scope dynamics`
    - Livestream agent — `extract.py --scope livestream`
 4. **Focused mode**:
    - Target section → Bus Dynamics agent only (tell it to scope to target's bus)
    - `livestream` target → Livestream agent only
-5. Collect results, deconflict, append all changes to the changelog file.
+5. Read agent output files via the Read tool, deconflict, append all changes to the changelog file.
 6. Apply one final batch:
    ```bash
    venv/bin/python scripts/control.py --batch /tmp/upstream_changes.json
+   ```
+7. Clean up (two separate Bash calls):
+   ```bash
+   rm -f /tmp/agent_prompt_*
+   ```
+   ```bash
+   rm -f /tmp/agent_output_*
    ```
 
 ### Phase 5: Summary
@@ -484,7 +536,7 @@ The editor passes channel lists to metering agents via `extract.py --scope meter
 
 ## Subagent Prompt Templates
 
-> The editor uses these as prompts when spawning analysis subagents via Agent.
+> The editor uses these as prompts when dispatching analysis subagents via `claude -p`.
 
 ### Shared Preamble (prepend to every subagent)
 
@@ -502,13 +554,17 @@ Working directory persists — all subsequent calls use `venv/bin/python scripts
 
 **DCA awareness**: A channel fader at unity with its DCA at -10dB is effectively -10dB. Always account for DCA levels. The extract includes DCA fader levels for relevant DCAs. Check each channel's `dca_groups` field — if empty (`[]`), the channel has no DCA and its fader alone determines its level.
 
-**Inactive channels**: Skip channels marked inactive in the extract, but list them in your response so the editor can flag them if musicians start playing. If your focus list includes channels not in the extract, note them as inactive.
+**Inactive channels**: Skip channels marked inactive in the extract, but list them in your output file so the editor can flag them if musicians start playing. If your focus list includes channels not in the extract, note them as inactive.
 
 **Preamp trim** — Target peak ranges are in the context brief. Adjust trim to bring channel peaks into the target range for their group. **Skip channels with a `meter_issue`** (flagged hot/quiet) — the engineer handles those manually. Only suggest trim tweaks for channels that are active, not flagged, and whose peaks fall outside the target range. Small moves — nudge the trim, don't overhaul it. Preamp trim is 0.0-1.0 raw, linear mapping to the X32's trim range. The OSC address is `/ch/XX/preamp/trim`, controlled via `--gain-trim` in control.py. If you suggest a trim change, account for that shift when evaluating the compressor threshold on the same channel.
 
 **Compressor ratio uses an index, not the actual ratio.** Map: 0=1.1:1, 1=1.3:1, 2=1.5:1, 3=2:1, 4=2.5:1, 5=3:1, 6=4:1, 7=5:1, 8=7:1, 9=10:1, 10=20:1, 11=100:1. Return the index as the raw value. See `docs/TECHNICAL.md` for full conversion tables.
 
-**Return format**: For each channel — number, label, parameter, current raw OSC value, suggested raw OSC value, human-readable equivalent (dB/Hz/ratio), reasoning. The editor needs raw values for batch files. If a channel looks good, say so. Don't suggest changes for the sake of it.
+**Output file**: Write your suggestions to the file path given in your prompt as `output_file` (e.g., `/tmp/agent_output_vocals_metering.txt`). Use the Write tool — do NOT print suggestions to stdout.
+
+**Return format** (in the output file): For each channel — number, label, parameter, current raw OSC value, suggested raw OSC value, human-readable equivalent (dB/Hz/ratio), reasoning. The editor needs raw values for batch files. If a channel looks good, say so. Don't suggest changes for the sake of it.
+
+**Your final text output must be short** — just the output file path and a one-line summary (e.g., "3 changes suggested, 2 channels clean"). The editor will Read the output file for details.
 
 ---
 
@@ -608,7 +664,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 - HPF: log scale 20-400Hz
 - Full reference: `docs/TECHNICAL.md`
 
-**Return format**: Target (channel/bus), channel number, label, parameter, current raw → suggested raw, human-readable equivalent, reasoning.
+**Return format** (in the output file): Target (channel/bus), channel number, label, parameter, current raw → suggested raw, human-readable equivalent, reasoning.
 
 ---
 
