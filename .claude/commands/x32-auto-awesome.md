@@ -352,14 +352,16 @@ Each subagent prompt MUST include an `output_file` path telling the agent where 
 - `/tmp/agent_output_drums_eq.txt`
 - `/tmp/agent_output_livestream.txt`
 
-**Step 2 — Write the prompt file:** Use the **Write tool** (not Bash echo/cat) to save the assembled prompt:
+**Step 2 — Write the prompt file:** You MUST use the **Write tool** (NOT Bash heredoc, NOT `cat >`, NOT `echo >`). Bash heredocs trigger permission prompts on every single write because each has unique content that no pattern can match. The Write tool with an absolute path is pre-approved.
+
+**The path MUST be absolute** (`/tmp/agent_prompt_*.txt`). Do NOT use relative paths.
 ```
 Write tool → /tmp/agent_prompt_vocals_metering.txt
 ```
 
 **Step 3 — Dispatch:** Run a **single Bash call per agent**, with a 10-minute timeout:
 ```bash
-claude -p --output-format text < /tmp/agent_prompt_vocals_metering.txt
+cat /tmp/agent_prompt_vocals_metering.txt | claude -p --model haiku --output-format text --allowedTools "Read,Write,Bash"
 ```
 The subagent writes its detailed suggestions to the output file. Its stdout response (captured by Bash) is just a confirmation with the file path.
 
@@ -375,9 +377,9 @@ The subagent writes its detailed suggestions to the output file. Its stdout resp
 
 **Rules:**
 - **One `claude -p` per Bash call.** Never put two commands in one call.
-- **No shell redirections** (`>`, `2>&1`). Output is captured by the Bash tool automatically.
-- **No chaining** (`&&`, `;`, `|`). No backgrounding (`&`) or `wait`.
-- **No `echo` piping.** Always use the Write tool to create the prompt file, then `< /tmp/agent_prompt_*.txt` to feed it.
+- **No shell redirections** (`>`, `2>&1`, `<`). Output is captured by the Bash tool automatically. Input comes from `cat file |` pipe.
+- **No chaining** (`&&`, `;`, `|` except for `cat file | claude -p`). No backgrounding (`&`) or `wait`.
+- **NEVER use Bash to write prompt files** (`cat >`, `echo >`, heredocs). Always use the Write tool. Bash writes trigger permission prompts on every call.
 - **Timeout: 600000** (10 minutes) on every `claude -p` Bash call.
 
 **Cleanup** — after collecting all suggestions for a phase:

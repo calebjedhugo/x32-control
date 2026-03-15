@@ -34,6 +34,8 @@
       "Write(//tmp/upstream_changes*)",
       "Write(//tmp/agent_prompt_*)",
       "Write(//tmp/agent_output_*)",
+      "Bash(claude -p --model * --output-format text < /tmp/agent_prompt_*)",
+      "Bash(claude -p --output-format text < /tmp/agent_prompt_*)",
       "Bash(rm -f /tmp/agent_prompt_*)",
       "Bash(rm -f /tmp/agent_output_*)",
       "Write(/captures/*)",
