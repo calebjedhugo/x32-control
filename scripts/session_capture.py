@@ -31,12 +31,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from common import (
     load_config, get_mixer, format_db, get_state_value, reliable_query,
-    warmup_connection, ratio_index_to_value, hpf_value_to_hz
+    warmup_connection, ratio_index_to_value, hpf_value_to_hz,
+    INACTIVE_THRESHOLD_RAW,
+    parse_meter_blob, parse_bus_meter_blob, extract_blob,
 )
-
-# Meter constants
-METER_CHANNEL_PRE = 0
-INACTIVE_THRESHOLD_RAW = 0.0005
 
 # On/off queries: with per-address response matching, the 46% misattribution
 # rate is eliminated. Retries now only cover UDP packet loss.
@@ -127,7 +125,7 @@ async def capture_channel_settings(mixer, ch_num: int, failures: list = None) ->
     stereo_linked = await reliable_on_off_query(mixer, link_addr, label=f"ch{ch_num} stereo link", failures=failures) == 1
 
     settings = {
-        "name": get_state_value(state, ch_addr, "config_name", ""),
+        "name": await reliable_query(mixer, f'{ch_addr}/config/name', default="", failures=failures) or "",
         "fader": round(fader, 3),
         "fader_db": f"{fader_db} dB" if fader_db is not None else format_db(fader),
         "mute": get_state_value(state, ch_addr, "mix_on", True) == False,
@@ -243,7 +241,7 @@ async def capture_bus_settings(mixer, bus_num: int, failures: list = None) -> Di
     fader_db = get_state_value(state, bus_addr, "mix_fader_db", None)
 
     settings = {
-        "name": get_state_value(state, bus_addr, "config_name", ""),
+        "name": await reliable_query(mixer, f'{bus_addr}/config/name', default="", failures=failures) or "",
         "fader": round(fader, 3),
         "fader_db": f"{fader_db} dB" if fader_db is not None else format_db(fader),
         "mute": get_state_value(state, bus_addr, "mix_on", True) == False,
@@ -321,7 +319,6 @@ async def capture_bus_settings(mixer, bus_num: int, failures: list = None) -> Di
 async def capture_fx_settings(mixer, fx_num: int, failures: list = None) -> Dict:
     """Capture settings for an FX slot."""
     fx_type_idx = await reliable_query(mixer, f'/fx/{fx_num}/type', default=0, failures=failures)
-    import math
     fx_type_idx = int(fx_type_idx) if fx_type_idx and not (isinstance(fx_type_idx, float) and math.isnan(fx_type_idx)) else 0
 
     settings = {
@@ -522,58 +519,6 @@ async def capture_dca_settings(mixer, failures: list = None) -> Dict:
     return dcas
 
 
-def parse_meter_blob(data: bytes) -> Dict[str, float]:
-    """Parse meter blob to get channel peak values.
-
-    X32 meter blob format: 4-byte LE int32 count, then count LE float32 values.
-    Channels 1-32 are at indices 0-31.
-    """
-    result = {}
-    try:
-        if len(data) < 4:
-            return result
-        count = struct.unpack('<i', data[:4])[0]
-        num_floats = min(count, (len(data) - 4) // 4)
-        values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
-
-        # Channels 1-32 at indices 0-31
-        for i in range(min(32, num_floats)):
-            result[f'ch{i + 1:02d}'] = values[i]
-    except Exception:
-        pass
-    return result
-
-
-def parse_bus_meter_blob(data: bytes) -> Dict[str, float]:
-    """Parse /meters/2 blob to get bus and main peak values.
-
-    Same LE float32 format as channel meters. Layout:
-    - Index 0: header (skip)
-    - Indices 1-16: Bus 1-16
-    - Indices 17-18: Main L/R
-    """
-    result = {}
-    try:
-        if len(data) < 4:
-            return result
-        count = struct.unpack('<i', data[:4])[0]
-        num_floats = min(count, (len(data) - 4) // 4)
-        values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
-
-        # Buses 1-16 at indices 1-16
-        for i in range(min(16, num_floats - 1)):
-            result[f'bus{i + 1:02d}'] = values[i + 1]
-
-        # Main L/R at indices 17-18
-        if num_floats > 17:
-            result['main_L'] = values[17]
-        if num_floats > 18:
-            result['main_R'] = values[18]
-    except Exception:
-        pass
-    return result
-
-
 async def capture_meters(mixer_ip: str, mixer_port: int, duration: float) -> tuple:
     """Capture meter data for gain staging analysis.
 
@@ -604,17 +549,6 @@ async def capture_meters(mixer_ip: str, mixer_port: int, duration: float) -> tup
         msg += b'/meters/2\x00\x00\x00'
         msg += struct.pack('>iii', 0, 0, 3)
         sock.sendto(msg, (mixer_ip, mixer_port))
-
-    def extract_blob(data: bytes) -> Optional[bytes]:
-        """Extract blob data from an OSC meter response."""
-        blob_start = data.find(b',b')
-        if blob_start <= 0:
-            return None
-        len_start = blob_start + 4
-        while len_start % 4 != 0:
-            len_start += 1
-        blob_len = struct.unpack('>i', data[len_start:len_start+4])[0]
-        return data[len_start+4:len_start+4+blob_len]
 
     start_time = time.time()
     last_request = 0
@@ -781,8 +715,20 @@ Example:
         "--output", "-o",
         help="Output file path (default: captures/session_TIMESTAMP.json)"
     )
+    parser.add_argument(
+        "--settings-only",
+        action="store_true",
+        help="Skip meter collection (use with --meter-data for external meter peaks)"
+    )
+    parser.add_argument(
+        "--meter-data",
+        help="Load external meter peaks JSON (from meter_collector.py)"
+    )
 
     args = parser.parse_args()
+
+    if args.meter_data and not args.settings_only:
+        print("Warning: --meter-data has no effect without --settings-only", file=sys.stderr)
 
     config = load_config()
 
@@ -856,6 +802,11 @@ Example:
                 for key in ("preamp", "eq", "gate", "compressor", "insert", "sends"):
                     even_ch[key] = odd_ch[key]
 
+        # Known false readback: ch31 (bass) insert/on always returns 0.
+        # The Ultimo Compressor (FX1) is confirmed active as a tonal insert.
+        if "ch31" in result["channels"]:
+            result["channels"]["ch31"]["insert"] = {"on": True, "fx_slot": 1}
+
         # Capture all buses
         print("Capturing bus settings...", file=sys.stderr)
         for bus_num in range(1, 17):
@@ -890,9 +841,38 @@ Example:
         print("  DCAs 1-8 done", file=sys.stderr)
 
         # Capture meters (channels + buses)
-        channel_peaks, bus_peaks = await capture_meters(
-            config["mixer_ip"], config["mixer_port"], args.duration
-        )
+        if args.settings_only and args.meter_data:
+            # Load external meter data from meter_collector.py
+            print(f"Loading external meter data from {args.meter_data}...", file=sys.stderr)
+            with open(args.meter_data) as f:
+                meter_data = json.load(f)
+
+            # Use rolling window peaks for gain staging analysis
+            channel_peaks = meter_data.get("channel_peaks_window", meter_data.get("channel_peaks", {}))
+            bus_peaks = meter_data.get("bus_peaks_window", meter_data.get("bus_peaks", {}))
+
+            # Store full running peaks as headroom reference
+            result["metadata"]["headroom_peaks"] = {
+                "channel_peaks": meter_data.get("channel_peaks", {}),
+                "bus_peaks": meter_data.get("bus_peaks", {}),
+            }
+            result["metadata"]["meter_duration"] = meter_data.get("duration_seconds", 0)
+            result["metadata"]["meter_source"] = "meter_collector"
+            result["metadata"]["meter_window_seconds"] = meter_data.get("window_seconds", 60)
+
+            print(f"  Meter data: {meter_data.get('duration_seconds', 0):.0f}s collection, "
+                  f"{meter_data.get('window_seconds', 60)}s rolling window", file=sys.stderr)
+        elif args.settings_only:
+            # Settings only, no meter data at all
+            print("Settings-only mode, skipping meter capture", file=sys.stderr)
+            channel_peaks = {f'ch{i:02d}': 0.0 for i in range(1, 33)}
+            bus_peaks = {f'bus{i:02d}': 0.0 for i in range(1, 17)}
+            result["metadata"]["meter_duration"] = 0
+            result["metadata"]["meter_source"] = "none"
+        else:
+            channel_peaks, bus_peaks = await capture_meters(
+                config["mixer_ip"], config["mixer_port"], args.duration
+            )
 
         # Build channel name lookup
         channel_names = {

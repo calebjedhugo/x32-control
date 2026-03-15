@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -101,7 +102,20 @@ async def get_mixer(config: Optional[Dict[str, Any]] = None):
         await mixer.start()
         await mixer.validate_connection()
         await mixer.reload()  # Load initial state from mixer
-        await asyncio.sleep(2)  # Wait for responses
+        # Poll until state is fully populated (last channel responds)
+        # instead of a fixed sleep that may be too short
+        max_wait = 10.0
+        poll_interval = 0.2
+        elapsed = 0.0
+        while elapsed < max_wait:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            state = mixer.state()
+            # Check if the last channel's name has arrived
+            if state.get('/ch/32/config_name') is not None:
+                break
+        if elapsed >= max_wait:
+            print(f"Warning: mixer state not fully populated after {max_wait}s", file=sys.stderr)
         return mixer
     except Exception as e:
         print(f"Error connecting to mixer at {config['mixer_ip']}:{config['mixer_port']}", file=sys.stderr)
@@ -297,7 +311,6 @@ def state_key(base_addr: str, prop: str) -> str:
         state_key("/bus/03", "mix/on") → "/bus/3/mix_on"
     """
     # Remove zero-padding from channel/bus numbers
-    import re
     base_addr = re.sub(r'/(\d+)', lambda m: f'/{int(m.group(1))}', base_addr)
     # Replace slashes in property with underscores
     prop = prop.replace('/', '_')
@@ -381,5 +394,73 @@ def hpf_hz_to_value(hz: int) -> float:
         return 0.0
     if hz >= 400:
         return 1.0
-    import math
     return math.log(hz/20) / math.log(400/20)
+
+
+# Meter constants
+METER_CHANNEL_PRE = 0  # /meters/0 = pre-fader channel meters
+INACTIVE_THRESHOLD_RAW = 0.0005  # Below this raw peak, channel is considered inactive
+
+
+def parse_meter_blob(data: bytes) -> Dict[str, float]:
+    """Parse meter blob to get channel peak values.
+
+    X32 meter blob format: 4-byte LE int32 count, then count LE float32 values.
+    Channels 1-32 are at indices 0-31.
+    """
+    result = {}
+    try:
+        if len(data) < 4:
+            return result
+        count = struct.unpack('<i', data[:4])[0]
+        num_floats = min(count, (len(data) - 4) // 4)
+        values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
+
+        # Channels 1-32 at indices 0-31
+        for i in range(min(32, num_floats)):
+            result[f'ch{i + 1:02d}'] = values[i]
+    except Exception:
+        pass
+    return result
+
+
+def parse_bus_meter_blob(data: bytes) -> Dict[str, float]:
+    """Parse /meters/2 blob to get bus and main peak values.
+
+    Same LE float32 format as channel meters. Layout:
+    - Index 0: header (skip)
+    - Indices 1-16: Bus 1-16
+    - Indices 17-18: Main L/R
+    """
+    result = {}
+    try:
+        if len(data) < 4:
+            return result
+        count = struct.unpack('<i', data[:4])[0]
+        num_floats = min(count, (len(data) - 4) // 4)
+        values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
+
+        # Buses 1-16 at indices 1-16
+        for i in range(min(16, num_floats - 1)):
+            result[f'bus{i + 1:02d}'] = values[i + 1]
+
+        # Main L/R at indices 17-18
+        if num_floats > 17:
+            result['main_L'] = values[17]
+        if num_floats > 18:
+            result['main_R'] = values[18]
+    except Exception:
+        pass
+    return result
+
+
+def extract_blob(data: bytes) -> Optional[bytes]:
+    """Extract blob data from an OSC meter response."""
+    blob_start = data.find(b',b')
+    if blob_start <= 0:
+        return None
+    len_start = blob_start + 4
+    while len_start % 4 != 0:
+        len_start += 1
+    blob_len = struct.unpack('>i', data[len_start:len_start+4])[0]
+    return data[len_start+4:len_start+4+blob_len]

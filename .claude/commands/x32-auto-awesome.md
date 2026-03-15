@@ -133,12 +133,23 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 
 ### Spawning a Pass
 
-**First pass** — RTA starts immediately, editor starts after capture:
+**First pass** — meter collector + RTA start immediately, editor starts after capture:
 
-1. Clean up stale files: `rm -f /tmp/rta_*` (shell glob — lets the shell expand, matches permission pattern)
-2. Start **RTA gathering agent** immediately (Agent, `model: "haiku"`, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
-3. Run capture in parallel: `venv/bin/python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
-4. Capture done → **routing verification** then active channel list:
+1. Clean up stale files: `rm -f /tmp/rta_*` (shell glob — lets the shell expand, matches permission pattern). Also clean meter collector files:
+   ```bash
+   rm -f /tmp/meter_peaks.json
+   ```
+   ```bash
+   rm -f /tmp/meter_collector_stop
+   ```
+2. Start **meter collector** (background Bash, `run_in_background: true`):
+   ```bash
+   venv/bin/python scripts/meter_collector.py --output /tmp/meter_peaks.json
+   ```
+   This runs for the full ~20 min analysis window, collecting rolling 60s window peaks + full running peaks. It uses raw UDP (no mixer API connection), so it coexists with the capture and RTA.
+3. Start **RTA gathering agent** immediately (Agent, `model: "haiku"`, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
+4. Run capture in parallel: `venv/bin/python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
+5. Capture done → **routing verification** then active channel list:
    a. Extract the `fx_routing` and channel insert data from the capture: `venv/bin/python scripts/extract.py --scope editor <capture_file>` — check `fx_routing` in the output.
    b. Cross-check FX routing against expected types (from `CLAUDE.md`). FX slot → expected type:
       - FX1: Ultimo Compressor (bass channel insert — tonal fuzz)
@@ -160,28 +171,28 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
       - Clean up: `rm -f /tmp/consistency_check.json`
    f. Extract `active_channels` from the same output and discard the rest. Do NOT read the full capture JSON or retain the full extract output.
    g. **Classify channels**: Use each channel's mixer label to classify it (vocal, kick, snare, rack_tom, floor_tom, overhead, piano, keys, bass, electric_guitar, acoustic_guitar, flute, violin, speaking, etc.). Build channel lists per group for use in context brief and `--channels` flags.
-5. Assemble context brief with **RTA status: pending**
-6. Spawn **editor** (Agent, `model: "opus"`, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA.
-7. Poll for quick pass to finish (5 min timeout):
+6. Assemble context brief with **RTA status: pending**
+7. Spawn **editor** (Agent, `model: "opus"`, background). It will dispatch metering agents immediately and apply those changes without waiting for RTA. Meter collector + RTA keep running in the background.
+8. Poll for quick pass to finish (5 min timeout):
    ```bash
    venv/bin/python scripts/poll_file.py --file /tmp/rta_quick_done --timeout 300
    ```
-8. Back up quick data BEFORE splice (splice deletes source): `cp /tmp/rta_batch_quick.jsonl /tmp/rta_batch_backup.jsonl`
-9. Splice quick data into capture, then signal editor (two separate Bash calls):
-   ```bash
-   venv/bin/python scripts/splice_rta.py /tmp/rta_batch_quick.jsonl <capture_file>
-   ```
-   ```bash
-   touch /tmp/rta_ready
-   ```
-   EQ agents can now start with partial RTA data.
-10. Poll for retry pass to finish (5 min timeout):
+9. Back up quick data BEFORE splice (splice deletes source): `cp /tmp/rta_batch_quick.jsonl /tmp/rta_batch_backup.jsonl`
+10. Splice quick data into capture, then signal editor (two separate Bash calls):
+    ```bash
+    venv/bin/python scripts/splice_rta.py /tmp/rta_batch_quick.jsonl <capture_file>
+    ```
+    ```bash
+    touch /tmp/rta_ready
+    ```
+    EQ agents can now start with partial RTA data.
+11. Poll for retry pass to finish (5 min timeout):
     ```bash
     venv/bin/python scripts/poll_file.py --file /tmp/rta_retry_done --timeout 300
     ```
-11. If retry data exists, append to backup: `cat /tmp/rta_batch_retry.jsonl >> /tmp/rta_batch_backup.jsonl` (if file doesn't exist, command fails harmlessly — continue). Do NOT splice retry data into the current capture (editor is already using it). Retry data becomes available on iteration 2+ via the backup.
-12. Wait for the **editor** to finish.
-13. Clean up (three separate Bash calls — multi-path `rm` fails permission matching):
+12. If retry data exists, append to backup: `cat /tmp/rta_batch_retry.jsonl >> /tmp/rta_batch_backup.jsonl` (if file doesn't exist, command fails harmlessly — continue). Do NOT splice retry data into the current capture (editor is already using it). Retry data becomes available on iteration 2+ via the backup.
+13. Wait for the **editor** to finish.
+14. Clean up RTA files (three separate Bash calls):
     ```bash
     rm -f /tmp/rta_ready
     ```
@@ -191,9 +202,48 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
     ```bash
     rm -f /tmp/rta_retry_done
     ```
-14. Add editor summary to changelog, present to engineer, flag concerns.
+15. Add editor summary to changelog, present to engineer, flag concerns.
+16. **Proceed directly to pass 2** — do NOT wait for engineer feedback. The engineer's board changes during pass 1 analysis *are* the feedback; the pass 2 capture will pick them up.
 
-**Subsequent passes** — shorter capture, RTA data carried forward:
+**Pass 2 capture sequence** — uses collected meter data, autonomous:
+
+The meter collector has been running for ~20 minutes with rich data. Flow directly from pass 1 completion.
+
+1. Stop meter collector: `touch /tmp/meter_collector_stop`
+2. Stop RTA agent (let current channel finish, then exit)
+3. Wait for collector output:
+   ```bash
+   venv/bin/python scripts/poll_file.py --file /tmp/meter_peaks.json --timeout 10
+   ```
+4. Apply batch changes from the editor: `venv/bin/python scripts/control.py --batch /tmp/mix_changes.json`
+5. Settings-only capture with merged meter data:
+   ```bash
+   venv/bin/python scripts/session_capture.py --settings-only --meter-data /tmp/meter_peaks.json
+   ```
+6. If pass 1 changed preamp trim, update peaks in the new capture with changelog offsets:
+   ```bash
+   venv/bin/python scripts/update_peaks.py <new_capture_file> <ch:dB> [ch:dB ...]
+   ```
+7. Splice RTA data into new capture (copy first since splice deletes its source — two separate Bash calls):
+   ```bash
+   cp /tmp/rta_batch_backup.jsonl /tmp/rta_batch_splice.jsonl
+   ```
+   ```bash
+   venv/bin/python scripts/splice_rta.py /tmp/rta_batch_splice.jsonl <new_capture_file>
+   ```
+8. Clean up meter collector files (two separate Bash calls):
+   ```bash
+   rm -f /tmp/meter_peaks.json
+   ```
+   ```bash
+   rm -f /tmp/meter_collector_stop
+   ```
+9. Get active channels: `venv/bin/python scripts/extract.py --scope editor <new_capture_file>` — extract only `active_channels`, discard the rest.
+10. Assemble context brief with **RTA status: present in capture**
+11. Spawn editor (Agent, `model: "opus"`)
+12. Relay summary, update changelog
+
+**Pass 3+ (if needed)** — normal short capture, no collector restart:
 
 1. Run capture: `venv/bin/python scripts/session_capture.py --duration 5`
 2. Splice saved RTA data into new capture (copy first since splice deletes its source — two separate Bash calls):
@@ -371,7 +421,7 @@ The subagent writes its detailed suggestions to the output file. Its stdout resp
 
 **Model selection** — add the `--model` flag based on agent type:
 - Metering agents (vocals/drums/instruments): `--model haiku`
-- EQ agents (vocals/drums/instruments/downstream): `--model sonnet`
+- EQ agents (vocals/drums/instruments/downstream): `--model opus`
 - Bus Dynamics agent: `--model sonnet`
 - Livestream agent: `--model sonnet`
 
@@ -420,12 +470,12 @@ venv/bin/python scripts/poll_file.py --file /tmp/rta_ready --timeout 600
 ```
 If poll_file.py exits with error (timeout), proceed without RTA data.
 Then dispatch all 4 EQ agents (all Bash calls in one message):
-4. Vocals EQ agent — `extract.py --scope eq` (focus: vocal + speaking channels, Voices bus, lead vocal bus, exciters)
-5. Drums EQ agent — `extract.py --scope eq` (focus: drum channels, drums bus)
-6. Instruments EQ agent — `extract.py --scope eq` (focus: instrument channels, Acoustic + Electronic buses, amp sim)
-7. Downstream EQ agent — `extract.py --scope eq` (focus: main, matrices, remaining buses not covered by section agents)
+4. Vocals EQ agent — `extract.py --scope eq --channels <vocal_channels>` (vocal + speaking channels, Voices bus, lead vocal bus, exciters)
+5. Drums EQ agent — `extract.py --scope eq --channels <drum_channels>` (drum channels, drums bus)
+6. Instruments EQ agent — `extract.py --scope eq --channels <instrument_channels>` (instrument channels, Acoustic + Electronic buses, amp sim)
+7. Downstream EQ agent — `extract.py --scope eq` (no --channels — needs main, matrices, all buses)
 
-Tell each EQ agent which channel numbers + labels are in its scope (from your classification).
+Tell each EQ agent which channel numbers + labels are in its scope (from your classification). The `--channels` flag filters the extract to only include those channels while keeping all buses/main/matrices/FX.
 
 **Focused mode** — dispatch only agents relevant to the target:
 - Target section's metering + EQ agents (e.g., drums → drums metering + drums EQ)
@@ -664,7 +714,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 - **Avoid boosting 200-400Hz for FOH** — significant room buildup. Only boost here if RTA data clearly shows a deficit
 - HPF values in capture are already in Hz. For suggestions, provide both Hz and raw value. Raw OSC: `/ch/XX/preamp/hpon` (1=on), `/ch/XX/preamp/hpf` (0.0-1.0, log scale 20-400Hz)
 - **You do NOT iterate.** One thorough pass, return all suggestions. The editor handles iteration.
-- The `eq` extract contains data for ALL channels/buses. **ONLY analyze the channels listed in your Focus section.** Ignore all other channels in the output.
+- Your `eq` extract is pre-filtered to only your assigned channels (plus all buses/main/matrices/FX). Analyze all channels in the output. The Downstream agent gets the unfiltered extract — it handles main/bus/matrix EQ.
 
 **Value conversions** (provide both raw and human-readable in all suggestions):
 - EQ gain: `raw = (dB + 15) / 30` (0.0 = -15dB, 0.5 = 0dB, 1.0 = +15dB)
@@ -680,7 +730,7 @@ RTA data is already in your extract (`rta_analysis` field per channel) — gathe
 
 **Scope**: EQ + HPF for vocal channels, lead vocal livestream bus (find by name, e.g. "Tammy"), and Voices FOH bus (find by name "Voices"). Also evaluates exciter FX tone.
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, Voices bus, lead vocal bus, FX exciters
+**Data:** `venv/bin/python scripts/extract.py --scope eq --channels <your_channel_numbers> <capture_file>` — the editor provides the --channels list. Also examine Voices bus, lead vocal bus, FX exciters in the output.
 **Docs:** `docs/CHANNELS.md` (read for voice types, lead vs BGV), `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look up voice type (alto/tenor/baritone) for HPF tuning.
@@ -703,7 +753,7 @@ The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look 
 
 **Scope**: EQ + HPF for drum channels and drums FOH bus (find by name "drums").
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, drums bus
+**Data:** `venv/bin/python scripts/extract.py --scope eq --channels <your_channel_numbers> <capture_file>` — the editor provides the --channels list. Also examine drums bus in the output.
 **Docs:** `docs/CHANNELS.md` (read for drum sizes, overhead positioning), `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 The editor provides your channel list + labels (e.g., "Your channels: ch22 Floor Tom, ch25 Snare, ch26 Kick, ch27 Hi-hats, ch28 Ride"). Read `docs/CHANNELS.md` to look up drum sizes and overhead positioning.
@@ -721,7 +771,7 @@ The editor provides your channel list + labels (e.g., "Your channels: ch22 Floor
 
 **Scope**: EQ + HPF for instrument channels and instrument buses (find by name "Acoustic", "Electronic"). Also evaluates amp sim FX tone.
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on channels from your assigned list, Acoustic + Electronic buses, FX amp sim
+**Data:** `venv/bin/python scripts/extract.py --scope eq --channels <your_channel_numbers> <capture_file>` — the editor provides the --channels list. Also examine Acoustic + Electronic buses, FX amp sim in the output.
 **Docs:** `docs/CHANNELS.md` (read for instrument details, stereo pairs/splits), `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look up instrument details (e.g., piano low/high string split, bass DI, etc.).
@@ -743,7 +793,7 @@ The editor provides your channel list + labels. Read `docs/CHANNELS.md` to look 
 
 **Scope**: Main bus EQ, matrix EQ (livestream + house), remaining buses not covered by section agents (ambient, CamVerb, AudVerb, Acoustic, Electronic), and **reverb FX engine parameters** (FX2 CamVerb, FX3 AudVerb).
 
-**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` — focus on main, all matrices, buses not owned by Vocals/Drums EQ agents (i.e., not Voices, drums, or lead vocal buses)
+**Data:** `venv/bin/python scripts/extract.py --scope eq <capture_file>` (no --channels — needs full board) — focus on main, all matrices, buses not owned by Vocals/Drums EQ agents (i.e., not Voices, drums, or lead vocal buses)
 **Docs:** `docs/CHANNELS.md`, `docs/VENUE.md`, `docs/CORRECTIONS.md`, `docs/TECHNICAL.md`
 
 **Note:** FOH processing bus EQ (Voices bus, drums bus) is handled by the Vocals EQ and Drums EQ agents respectively. Lead vocal bus (e.g. "Tammy") is handled by Vocals EQ agent. Any bus named "Not used" is decommissioned — skip it.
