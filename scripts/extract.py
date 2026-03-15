@@ -9,6 +9,7 @@ Usage:
     python extract.py --scope metering-drums captures/session_XXX.json
     python extract.py --scope metering-instruments captures/session_XXX.json
     python extract.py --scope eq captures/session_XXX.json
+    python extract.py --scope eq --channels 1,2,3,5 captures/session_XXX.json
     python extract.py --scope editor captures/session_XXX.json
     python extract.py --scope livestream captures/session_XXX.json
 """
@@ -136,12 +137,16 @@ def extract_metering(capture, scope_channels):
     return result
 
 
-def extract_eq(capture):
-    """Extract EQ + HPF + FX tone for all active channels, buses, main, matrices.
+def extract_eq(capture, scope_channels=None):
+    """Extract EQ + HPF + FX tone for active channels, buses, main, matrices.
 
     For the EQ agent: everything timbral across the full signal path.
+    If scope_channels is provided, only those channels are included (buses/main/matrices/FX still included).
     """
     active = get_active_channels(capture)
+    if scope_channels is not None:
+        # Only include active channels that are also in the requested scope
+        active = [ch for ch in active if ch in scope_channels]
 
     result = {
         "channels": {},
@@ -388,14 +393,15 @@ def main():
         epilog="""
 Scopes:
   metering              Preamp + dynamics for specified channels (requires --channels)
-  eq                    EQ + HPF + FX tone for all active channels + buses + main + matrices
+  eq                    EQ + HPF + FX tone for active channels + buses + main + matrices (--channels filters channels)
   editor                Overview: active channels, routing, bus/main faders, DCA, FX routing
   dynamics              Bus/main/matrix compressor settings
   livestream            Bus->matrix sends, matrix settings, FX returns
 
 Examples:
     python extract.py --scope metering --channels 1,2,3,5,7 captures/session_XXX.json
-    python extract.py --scope eq captures/session_2026-02-18_190539.json
+    python extract.py --scope eq captures/session_XXX.json
+    python extract.py --scope eq --channels 1,2,3,5,7 captures/session_XXX.json
         """
     )
     parser.add_argument(
@@ -407,7 +413,7 @@ Examples:
     parser.add_argument(
         "--channels", "-c",
         help="Comma-separated channel list (e.g., 1,2,3,5,7). "
-             "Required for --scope metering, optional override for metering-* scopes."
+             "Required for --scope metering. Optional for --scope eq to filter channels."
     )
     parser.add_argument(
         "capture_file",
@@ -442,14 +448,19 @@ Examples:
     with open(capture_path) as f:
         capture = json.load(f)
 
-    # Handle --channels override for metering scopes
+    # Parse --channels if provided
+    channel_list = None
     if args.channels:
         channel_list = [int(c.strip()) for c in args.channels.split(',')]
+
+    # Dispatch to scope handler
+    if args.scope == 'metering':
+        if not channel_list:
+            print("Error: --scope metering requires --channels", file=sys.stderr)
+            sys.exit(1)
         result = extract_metering(capture, channel_list)
-    elif args.scope == 'metering':
-        # Already checked above, but just in case
-        print("Error: --scope metering requires --channels", file=sys.stderr)
-        sys.exit(1)
+    elif args.scope == 'eq':
+        result = extract_eq(capture, scope_channels=channel_list)
     else:
         handler = SCOPE_HANDLERS[args.scope]
         result = handler(capture)
