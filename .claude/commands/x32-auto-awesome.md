@@ -136,7 +136,7 @@ Load targets from the `## Metering Targets` section in `docs/VENUE.md` at startu
 **First pass** — RTA starts immediately, editor starts after capture:
 
 1. Clean up stale files: `rm -f /tmp/rta_*` (shell glob — lets the shell expand, matches permission pattern)
-2. Start **RTA gathering agent** immediately (Agent, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
+2. Start **RTA gathering agent** immediately (Agent, `model: "haiku"`, background) — see RTA Gathering Agent section below. Two-pass: quick scan with silence early-exit, then retry silent channels.
 3. Run capture in parallel: `venv/bin/python scripts/session_capture.py --duration 60` (60s for accurate meter data — musicians must be playing)
 4. Capture done → **routing verification** then active channel list:
    a. Extract the `fx_routing` and channel insert data from the capture: `venv/bin/python scripts/extract.py --scope editor <capture_file>` — check `fx_routing` in the output.
