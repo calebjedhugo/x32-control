@@ -49,13 +49,13 @@ Read this when discussing room acoustics, PA issues, or mix strategy.
 
 ## Metering Targets
 
-Captured with master at unity, 2026-02-25.
+Captured with master at unity, 2026-02-25. Vocal targets revised 2026-03-29 (+5dB after systemic 2kHz resonance cuts required downstream level compensation).
 
 ### Vocals
 | Metric | Raw | dB |
 |--------|-----|-----|
-| Target range | 0.082 – 0.258 | -21.7 to -11.8 |
-| Average peak | 0.151 | -16.4 |
+| Target range | 0.145 – 0.460 | -16.8 to -6.7 |
+| Average peak | 0.270 | -11.4 |
 
 ### Drums
 | Metric | Raw | dB |

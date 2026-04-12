@@ -50,6 +50,54 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
 
 Read the project CLAUDE.md, `docs/CHANNELS.md`, `docs/VENUE.md`, and `docs/CORRECTIONS.md` (if it exists).
 
+### One-Time Debug Tasks — COMPLETED 2026-03-29
+
+Both tasks verified and fixes applied. See git history for details. Section kept for reference only.
+
+1. **RTA blob format verification** — The RTA parser (`rta_listen.py`) uses big-endian int16 (`>h`) to parse `/meters/4` blobs, but channel meter blobs (`/meters/0`) were already fixed to little-endian float32 (`<f`). Verify which format `/meters/4` actually uses:
+   ```bash
+   venv/bin/python -c "
+   import socket, struct, time
+   sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+   sock.settimeout(2)
+   sock.bind(('', 0))
+   # Subscribe to RTA
+   msg = b'/-prefs/rta/source\x00\x00\x00,i\x00\x00' + struct.pack('>i', 1)
+   sock.sendto(msg, ('192.168.0.222', 10023))
+   msg2 = b'/batchsubscribe\x00\x00,ssiii\x00\x00' + b'/meters/4\x00\x00\x00/meters/4\x00\x00\x00' + struct.pack('>iii', 0, 0, 2)
+   sock.sendto(msg2, ('192.168.0.222', 10023))
+   time.sleep(0.5)
+   for _ in range(10):
+       try:
+           data, _ = sock.recvfrom(4096)
+           if b'/meters/4' in data[:20]:
+               # Find blob
+               idx = data.find(b',b')
+               if idx > 0:
+                   blob_start = idx + 4
+                   while blob_start % 4 != 0: blob_start += 1
+                   blob_len = struct.unpack('>i', data[blob_start:blob_start+4])[0]
+                   blob = data[blob_start+4:blob_start+4+blob_len]
+                   n = min(10, blob_len // 2)
+                   be_int16 = struct.unpack(f'>{n}h', blob[:n*2])
+                   n4 = min(5, blob_len // 4)
+                   le_float32 = struct.unpack(f'<{n4}f', blob[:n4*4])
+                   print(f'Blob size: {blob_len} bytes')
+                   print(f'As BE int16 (first 10): {be_int16}')
+                   print(f'As LE float32 (first 5): {le_float32}')
+                   print(f'Verdict: {\"likely float32\" if all(0 <= v <= 1.0 for v in le_float32) else \"likely int16\"}')
+                   break
+       except socket.timeout:
+           pass
+   sock.close()
+   "
+   ```
+   If the verdict is "likely float32", the RTA parser needs to be fixed (same change that was made to `common.py` meter parsing). Report the finding and update `rta_listen.py`'s `parse_rta_blob()` accordingly.
+
+2. **`get_channel_name` unnecessary connection** — `rta_listen.py` line ~684 opens a full `behringer_mixer` connection just to read one channel name, adding an extra client to the mixer. Verify this is the case (read the function), and if so, change it to accept the channel name as a CLI argument (`--name`) instead. The RTA gathering agent already knows channel names from its prompt.
+
+**After verifying both**, remove this `### One-Time Debug Tasks` section from the skill file.
+
 ### Permission Note
 
 All Bash commands must be run as **individual calls** — never chain with `&&` or `;`. Compound commands trigger security checks and fail permission matching.
@@ -258,7 +306,7 @@ The meter collector has been running for ~20 minutes with rich data. Flow direct
 5. Spawn editor (Agent, `model: "opus"`)
 6. Relay summary, update changelog
 
-If RTA gathering failed or was skipped entirely (no musicians playing during capture), use **RTA status: not available**.
+If RTA gathering failed or was skipped entirely (no musicians playing during capture), use **RTA status: not available**. **This means EQ agents will NOT be dispatched** — only metering and upstream work proceeds. Alert the engineer that EQ optimization is blocked on RTA data.
 
 ### End of Session
 
@@ -273,6 +321,7 @@ When the engineer wraps up:
    - Vocal bus fader: Claude set -6dB, engineer raised to -4dB (pattern: Claude underestimates vocals)
    - Kick EQ 60Hz boost: +3dB, engineer left as-is
    ```
+6. If the `### One-Time Debug Tasks` section still exists in this skill file, and both tasks were completed during this session, remove the entire section (from `### One-Time Debug Tasks` through the line `**After verifying both**, remove this...`).
 ### RTA Gathering Agent
 
 > Spawned by the orchestrator in parallel with the capture. Collects frequency data by scanning all vocal/instrument channels (skips inactive ones automatically).
@@ -454,7 +503,7 @@ rm -f /tmp/agent_output_*
 
 - **RTA status: pending** → two-phase dispatch (first pass)
 - **RTA status: present in capture** → dispatch all 7 immediately (subsequent passes)
-- **RTA status: not available** → dispatch all 7 immediately (EQ agents can still evaluate HPF, venue rules, FX tone, bus/matrix EQ — they just won't have RTA-informed channel EQ suggestions and will note missing data)
+- **RTA status: not available** → **STOP. Do not dispatch EQ agents.** Dispatch metering agents only (trim, gates, compressors, reverb sends). Report to the engineer that RTA data is unavailable and EQ work is skipped. The mix sounds good enough without automation — applying EQ changes without per-channel frequency data makes things worse, not better. Metering + upstream (bus dynamics, livestream sends) can still proceed since they don't depend on RTA.
 
 **Step 1: Dispatch metering agents NOW** (all Bash calls in one message):
 Use `--scope metering --channels <list>` with the channel numbers from your classification:

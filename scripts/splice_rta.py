@@ -64,12 +64,24 @@ def main():
             print(f"Warning: {ch_key} not in capture, skipping", file=sys.stderr)
             continue
 
+        # Skip invalid RTA data — don't poison the capture
+        if not result.get("valid", False):
+            notes = result.get("validation_notes", "unknown reason")
+            print(f"Warning: {ch_key} RTA data invalid ({notes}), skipping", file=sys.stderr)
+            continue
+
         channels[ch_key]["rta_analysis"] = {
             "timestamp": result.get("timestamp"),
+            "valid": result.get("valid", False),
+            "validation_notes": result.get("validation_notes"),
             "samples_collected": result.get("samples_collected"),
             "peak_meter": result.get("peak_meter"),
             "bands": result.get("bands", {}),
-            "interpretation": result.get("interpretation", {}),
+            "spectral_summary": result.get("spectral_summary"),
+            "peaks": result.get("peaks", []),
+            "problems": result.get("problems", []),
+            "spectral_tilt": result.get("spectral_tilt"),
+            "transient_character": result.get("transient_character"),
         }
         spliced += 1
 

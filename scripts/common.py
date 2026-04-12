@@ -405,8 +405,9 @@ INACTIVE_THRESHOLD_RAW = 0.0005  # Below this raw peak, channel is considered in
 def parse_meter_blob(data: bytes) -> Dict[str, float]:
     """Parse meter blob to get channel peak values.
 
-    X32 meter blob format: 4-byte LE int32 count, then count LE float32 values.
-    Channels 1-32 are at indices 0-31.
+    X32 meter blob format: 4-byte LE int32 count (70), then 70 LE float32 values.
+    Layout: 2 values per channel (input level + gate indicator), 32 channels = 64,
+    plus 6 aux values. Channel N meter is at index (N-1)*2.
     """
     result = {}
     try:
@@ -416,9 +417,11 @@ def parse_meter_blob(data: bytes) -> Dict[str, float]:
         num_floats = min(count, (len(data) - 4) // 4)
         values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
 
-        # Channels 1-32 at indices 0-31
-        for i in range(min(32, num_floats)):
-            result[f'ch{i + 1:02d}'] = values[i]
+        # Channels 1-32: meter at index (N-1)*2
+        for i in range(32):
+            idx = i * 2
+            if idx < num_floats:
+                result[f'ch{i + 1:02d}'] = values[idx]
     except Exception:
         pass
     return result
