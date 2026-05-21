@@ -26,9 +26,57 @@ Usage:
 import argparse
 import asyncio
 import json
+import math
 import re
 import sys
 from pathlib import Path
+
+
+def db_to_eq_gain_raw(db: float) -> float:
+    """Convert dB to raw EQ gain (0.0-1.0). 0 dB = 0.5, ±15 dB range."""
+    if not -15.0 <= db <= 15.0:
+        raise ValueError(f"EQ gain must be between -15 and +15 dB (got {db})")
+    return db / 30.0 + 0.5
+
+
+def hz_to_eq_freq_raw(hz: float) -> float:
+    """Convert Hz to raw EQ frequency (0.0-1.0). Log scale 20 Hz to 20 kHz."""
+    if not 20.0 <= hz <= 20000.0:
+        raise ValueError(f"EQ frequency must be between 20 and 20000 Hz (got {hz})")
+    return math.log(hz / 20.0) / math.log(1000.0)
+
+
+def _validate_raw_unit(name: str, value: float) -> None:
+    """Error out if a raw 0-1 parameter is clearly outside range (would be silently clamped by X32)."""
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(
+            f"--{name} expects a raw 0.0-1.0 value (got {value}). "
+            f"Use --{name}-db or --{name}-hz for human units, or check the value."
+        )
+
+
+def _resolve_eq_gain(args):
+    """Pick gain from --gain (raw) or --gain-db (human). Returns raw 0-1 or None."""
+    if args.gain_db is not None and args.gain is not None:
+        raise ValueError("Specify only one of --gain or --gain-db")
+    if args.gain_db is not None:
+        return db_to_eq_gain_raw(args.gain_db)
+    if args.gain is not None:
+        _validate_raw_unit("gain", args.gain)
+        return args.gain
+    return None
+
+
+def _resolve_eq_freq(args):
+    """Pick freq from --freq (raw) or --freq-hz (human). Returns raw 0-1 or None."""
+    if args.freq_hz is not None and args.freq is not None:
+        raise ValueError("Specify only one of --freq or --freq-hz")
+    if args.freq_hz is not None:
+        return hz_to_eq_freq_raw(args.freq_hz)
+    if args.freq is not None:
+        _validate_raw_unit("freq", args.freq)
+        return args.freq
+    return None
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -200,14 +248,24 @@ async def main():
         help="EQ frequency as raw 0.0-1.0 value (log scale: 0.0=20Hz, 1.0=20kHz). Requires --eq-band"
     )
     parser.add_argument(
+        "--freq-hz",
+        type=float,
+        help="EQ frequency in Hz (20-20000). Converted to raw internally. Requires --eq-band"
+    )
+    parser.add_argument(
         "--gain",
         type=float,
         help="EQ gain as raw 0.0-1.0 value (0.5 = 0dB, 0.0 = -15dB, 1.0 = +15dB). Requires --eq-band"
     )
     parser.add_argument(
+        "--gain-db",
+        type=float,
+        help="EQ gain in dB (-15 to +15). Converted to raw internally. Requires --eq-band"
+    )
+    parser.add_argument(
         "--q",
         type=float,
-        help="EQ Q factor as raw 0.0-1.0 value. Requires --eq-band"
+        help="EQ Q factor as raw 0.0-1.0 value. Requires --eq-band. (No human-units flag — Q raw mapping is not verified.)"
     )
     parser.add_argument(
         "--eq-on",
@@ -467,11 +525,14 @@ async def main():
 
             # EQ band
             if args.eq_band:
-                if args.freq is not None:
-                    await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/f", args.freq, args.dry_run)
-                if args.gain is not None:
-                    await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/g", args.gain, args.dry_run)
+                freq_raw = _resolve_eq_freq(args)
+                gain_raw = _resolve_eq_gain(args)
+                if freq_raw is not None:
+                    await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/f", freq_raw, args.dry_run)
+                if gain_raw is not None:
+                    await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/g", gain_raw, args.dry_run)
                 if args.q is not None:
+                    _validate_raw_unit("q", args.q)
                     await set_value(mixer, f"{target_addr}/eq/{args.eq_band}/q", args.q, args.dry_run)
 
             # EQ on/off
@@ -524,11 +585,14 @@ async def main():
 
             # EQ band (main has 6 bands)
             if args.eq_band:
-                if args.freq is not None:
-                    await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/f", args.freq, args.dry_run)
-                if args.gain is not None:
-                    await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/g", args.gain, args.dry_run)
+                freq_raw = _resolve_eq_freq(args)
+                gain_raw = _resolve_eq_gain(args)
+                if freq_raw is not None:
+                    await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/f", freq_raw, args.dry_run)
+                if gain_raw is not None:
+                    await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/g", gain_raw, args.dry_run)
                 if args.q is not None:
+                    _validate_raw_unit("q", args.q)
                     await set_value(mixer, f"{main_addr}/eq/{args.eq_band}/q", args.q, args.dry_run)
 
             # EQ on/off

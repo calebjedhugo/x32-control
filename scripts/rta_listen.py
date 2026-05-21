@@ -158,22 +158,24 @@ class RTAListener:
         self.send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)
 
     def _parse_channel_meter(self, data: bytes) -> Optional[float]:
-        """Parse channel meter blob and return level for our channel.
+        """Parse channel meter blob and return normalized level (0.0-1.0) for our channel.
 
-        Format: 4-byte LE int32 count (70), then 70 LE float32 values.
-        Layout: 2 values per channel (input level + gate), 32 channels = 64,
-        plus 6 aux values. Channel N meter is at index (N-1)*2.
+        Format (empirically verified on live X32): 4-byte LE int32 count (=70),
+        followed by 70 LE float32 values, one per channel slot (0.0-1.0 linear).
+        Channel N is at index (N-1).
         """
         try:
             if len(data) < 4:
                 return None
             count = struct.unpack('<i', data[:4])[0]
             num_floats = min(count, (len(data) - 4) // 4)
+            if num_floats < self.channel:
+                return None
             values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
-            idx = (self.channel - 1) * 2
-            if idx < len(values):
-                return values[idx]
-            return None
+            idx = self.channel - 1
+            if idx >= len(values):
+                return None
+            return values[idx]
         except Exception:
             return None
 
