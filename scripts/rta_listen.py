@@ -149,9 +149,12 @@ class RTAListener:
     def subscribe_rta(self, channel: int):
         """Subscribe to RTA data for a specific channel."""
         self.channel = channel
-        # Enable RTA processing (mode=1) and set source
+        # Enable RTA processing (mode=1) and set the active RTA source.
+        # /-stat/rtasource is the live source the desk reads from; /-prefs/rta/source
+        # is just a remembered UI preference and does NOT move the actual RTA tap.
+        # Enum is 0-indexed: channel N (1-32) → value N-1.
         self.send_osc('/-prefs/rta/mode', 1)
-        self.send_osc('/-prefs/rta/source', channel)
+        self.send_osc('/-stat/rtasource', channel - 1)
         # Subscribe to RTA meters
         self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
         # Also subscribe to channel meters for peak level
@@ -310,11 +313,11 @@ class RTAListener:
                 self.send_osc('/xremote')
                 last_xremote = current_time
 
-            # Re-subscribe every 100ms
-            # NOTE: /-prefs/rta/source does NOT change /meters/4 blob over OSC.
-            # The X32 always sends the same RTA data regardless of source setting.
-            # Per-channel RTA is not possible via OSC on this firmware. See CORRECTIONS.md.
+            # Re-subscribe every 100ms. Also re-assert the RTA source — if anyone
+            # touches the RTA picker on the desk, /-stat/rtasource jumps and our
+            # /meters/4 stream silently switches to whatever they selected.
             if current_time - last_subscribe > 0.1:
+                self.send_osc('/-stat/rtasource', self.channel - 1)
                 self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
                 self.send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)
                 last_subscribe = current_time
