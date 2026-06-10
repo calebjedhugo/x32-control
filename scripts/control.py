@@ -21,6 +21,13 @@ Usage:
     python control.py --channel 5 --fader -10dB --dry-run
     python control.py --batch changes.json
     python control.py --batch changes.json --dry-run
+    python control.py --batch changes.json --changelog captures/changelog_2026-06-10.jsonl --phase eq --iter 2
+
+Batch mode validates every command before applying anything (address allowlist,
+value ranges, integer indices, mute/scene/routing blocked) and exits:
+    0 = all applied, 1 = load error, 2 = validation failed (batch kept),
+    3 = partial failure (remainder in <file>.failed.json)
+The last stdout line is machine-readable: BATCH_RESULT {...json...}
 """
 
 import argparse
@@ -29,6 +36,7 @@ import json
 import math
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -159,6 +167,208 @@ async def set_value(mixer, address, value, dry_run=False):
     except Exception as e:
         print(f"Error setting {address}: {e}", file=sys.stderr)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Batch mode: validation + changelog + apply
+#
+# Batch files are JSON arrays of change objects. Only "address" and "value"
+# are required; enriched fields (old_value, human, ch, label, reason, trim_db)
+# are logged to the changelog when --changelog is given.
+# ---------------------------------------------------------------------------
+
+# Addresses that batch mode refuses outright (safety rules).
+_BLOCKED_BATCH_PATTERNS = [
+    (re.compile(r'^/(ch|bus|mtx|fxrtn|auxin)/\d{2}/mix/on$'), "mute toggle — never touch mute"),
+    (re.compile(r'^/main/(st|m)/mix/on$'), "mute toggle — never touch mute"),
+    (re.compile(r'^/(ch|bus)/\d{2}/mix/(st|mono)$'), "routing flag — alert the engineer instead"),
+    (re.compile(r'^/fx/[1-8]/type$'), "FX type change — too drastic for batch"),
+    (re.compile(r'^/-'), "console/scene operation — never save scenes"),
+    (re.compile(r'^/dca/'), "DCA — engineer's live controls"),
+]
+
+# Targets batch mode may address at all.
+_ALLOWED_BATCH_TARGET = re.compile(
+    r'^(/(ch|bus|auxin|fxrtn)/\d{2}|/mtx/\d{2}|/main/(st|m)|/fx/[1-8])(/|$)'
+)
+
+# Value rules for index-style parameters. Anything not matched here must be a
+# float in 0.0-1.0 (the X32 normalized-unit convention).
+_BATCH_INT_RULES = [
+    (re.compile(r'/dyn/ratio$'), 0, 11),     # compressor ratio is an INDEX, not the ratio value
+    (re.compile(r'/dyn/knee$'), 0, 5),
+    (re.compile(r'/(dyn|gate|eq)/on$'), 0, 1),
+    (re.compile(r'/dyn/(det|env|auto)$'), 0, 1),
+    (re.compile(r'/preamp/(hpon|invert)$'), 0, 1),
+    (re.compile(r'/mix/\d{2}/on$'), 0, 1),   # send enable (not mute)
+    (re.compile(r'/gate/mode$'), 0, 4),
+    (re.compile(r'/eq/[1-6]/type$'), 0, 5),
+]
+
+# Backstop against drastic moves when old_value is provided. 0.34 raw on the
+# EQ-gain scale is ~10dB — far beyond the "small moves" rule; real clamping to
+# 2-3dB is the apply worker's job, this just catches runaway suggestions.
+_MAX_RAW_DELTA = 0.34
+
+
+def _coerce_batch_value(value):
+    """Normalize a batch value to a number (strings like '0.5' become floats)."""
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    return value
+
+
+def validate_batch(commands):
+    """Validate a batch of change objects. Returns (errors, normalized_commands)."""
+    errors = []
+    normalized = []
+    for i, cmd in enumerate(commands):
+        where = f"command {i + 1}"
+        if not isinstance(cmd, dict) or "address" not in cmd or "value" not in cmd:
+            errors.append(f"{where}: must be an object with 'address' and 'value'")
+            continue
+        address = cmd["address"]
+        if not isinstance(address, str) or not address.startswith("/"):
+            errors.append(f"{where}: bad address {address!r}")
+            continue
+        where = f"{where} ({address})"
+
+        blocked = next((reason for pat, reason in _BLOCKED_BATCH_PATTERNS if pat.search(address)), None)
+        if blocked:
+            errors.append(f"{where}: BLOCKED — {blocked}")
+            continue
+        if not _ALLOWED_BATCH_TARGET.match(address):
+            errors.append(f"{where}: unrecognized target — not in the batch allowlist")
+            continue
+
+        value = _coerce_batch_value(cmd["value"])
+        if not isinstance(value, (int, float)):
+            errors.append(f"{where}: non-numeric value {cmd['value']!r}")
+            continue
+
+        int_rule = next(((lo, hi) for pat, lo, hi in _BATCH_INT_RULES if pat.search(address)), None)
+        if int_rule:
+            lo, hi = int_rule
+            if float(value) != int(value) or not lo <= int(value) <= hi:
+                errors.append(
+                    f"{where}: expects an integer index {lo}-{hi}, got {value!r}"
+                    + (" (compressor ratio is an index, not the ratio value)" if address.endswith("/dyn/ratio") else "")
+                )
+                continue
+            value = int(value)
+        else:
+            if not 0.0 <= float(value) <= 1.0:
+                errors.append(f"{where}: expects a raw 0.0-1.0 value, got {value!r}")
+                continue
+            old = _coerce_batch_value(cmd.get("old_value"))
+            if isinstance(old, (int, float)) and abs(float(value) - float(old)) > _MAX_RAW_DELTA:
+                errors.append(
+                    f"{where}: drastic move (raw delta {abs(float(value) - float(old)):.2f} > {_MAX_RAW_DELTA}) — "
+                    f"small moves only; split into iterations"
+                )
+                continue
+
+        normalized.append({**cmd, "value": value})
+    return errors, normalized
+
+
+def _append_changelog(changelog_path, cmd, phase, iteration):
+    """Append one applied change to the changelog (JSONL, O_APPEND)."""
+    entry = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "phase": phase,
+        "iter": iteration,
+        "ch": cmd.get("ch"),
+        "label": cmd.get("label"),
+        "param": cmd["address"],
+        "old_raw": cmd.get("old_value"),
+        "new_raw": cmd["value"],
+        "human": cmd.get("human"),
+        "reason": cmd.get("reason"),
+    }
+    if cmd.get("trim_db") is not None:
+        entry["trim_db"] = cmd["trim_db"]
+    changelog_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(changelog_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+async def run_batch(args):
+    """Run --batch mode. Exit codes: 0 = all applied, 1 = usage/load error,
+    2 = validation failed (nothing applied, batch file kept),
+    3 = partial failure (failures written to <batch>.failed.json)."""
+    batch_path = Path(args.batch)
+    if not batch_path.exists():
+        print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(batch_path) as f:
+            commands = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error: Batch file is not valid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(commands, list):
+        print("Error: Batch file must be a JSON array of change objects", file=sys.stderr)
+        sys.exit(1)
+
+    changelog_path = Path(args.changelog) if args.changelog else None
+
+    errors, commands = validate_batch(commands)
+    if errors:
+        print("Batch validation FAILED — nothing applied, batch file kept:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        print(f"BATCH_RESULT {json.dumps({'total': len(errors) + len(commands), 'applied': 0, 'failed': 0, 'validation_errors': len(errors)})}")
+        sys.exit(2)
+
+    if not commands:
+        batch_path.unlink()
+        print(f"BATCH_RESULT {json.dumps({'total': 0, 'applied': 0, 'failed': 0})}")
+        return
+
+    print(f"Batch: {len(commands)} commands", file=sys.stderr)
+
+    if args.dry_run:
+        for cmd in commands:
+            print(f"[DRY RUN] Would set {cmd['address']} = {cmd['value']}")
+        print(f"BATCH_RESULT {json.dumps({'total': len(commands), 'applied': 0, 'failed': 0, 'dry_run': True})}")
+        return
+
+    applied = 0
+    failed_cmds = []
+    mixer = await get_mixer()
+    try:
+        for cmd in commands:
+            ok = await set_value(mixer, cmd["address"], cmd["value"])
+            if ok:
+                applied += 1
+                if changelog_path:
+                    _append_changelog(changelog_path, cmd, args.phase, args.iter)
+            else:
+                failed_cmds.append(cmd)
+            await asyncio.sleep(0.05)
+    finally:
+        await mixer.stop()
+
+    result = {"total": len(commands), "applied": applied, "failed": len(failed_cmds)}
+    if changelog_path:
+        result["changelog"] = str(changelog_path)
+        result["changelog_appended"] = applied
+    if failed_cmds:
+        failed_path = batch_path.with_name(batch_path.stem + ".failed.json")
+        with open(failed_path, "w") as f:
+            json.dump(failed_cmds, f, indent=2)
+        result["failed_file"] = str(failed_path)
+    batch_path.unlink()
+
+    print(f"Batch complete: {applied}/{len(commands)} succeeded", file=sys.stderr)
+    print(f"BATCH_RESULT {json.dumps(result)}")
+    if failed_cmds:
+        sys.exit(3)
 
 
 def parse_fader_input(fader_str):
@@ -377,7 +587,26 @@ async def main():
         "--batch",
         type=str,
         metavar="FILE",
-        help='Execute batch of raw OSC commands from JSON file [{"address": ..., "value": ...}, ...]'
+        help='Execute batch of change objects from JSON file [{"address": ..., "value": ..., ...}, ...]. '
+             'Validates all commands before applying. Deletes the file on completion; '
+             'failures are written to <file>.failed.json'
+    )
+    parser.add_argument(
+        "--changelog",
+        type=str,
+        metavar="FILE",
+        help="Batch mode: append one JSONL line per applied change to this file"
+    )
+    parser.add_argument(
+        "--phase",
+        type=str,
+        help="Batch mode: phase name recorded in the changelog (e.g. metering, eq, upstream)"
+    )
+    parser.add_argument(
+        "--iter",
+        type=int,
+        default=1,
+        help="Batch mode: iteration number recorded in the changelog"
     )
 
     # Options
@@ -396,45 +625,7 @@ async def main():
 
     # Batch mode — bypass all other argument validation
     if args.batch:
-        batch_path = Path(args.batch)
-        if not batch_path.exists():
-            print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
-            sys.exit(1)
-
-        with open(batch_path) as f:
-            commands = json.load(f)
-
-        if not commands:
-            print("No commands in batch file", file=sys.stderr)
-            return
-
-        print(f"Batch: {len(commands)} commands", file=sys.stderr)
-
-        if args.dry_run:
-            for cmd in commands:
-                print(f"[DRY RUN] Would set {cmd['address']} = {cmd['value']}")
-            return
-
-        mixer = await get_mixer()
-        try:
-            success = 0
-            for cmd in commands:
-                address = cmd["address"]
-                value = cmd["value"]
-                if isinstance(value, str):
-                    try:
-                        value = float(value)
-                    except ValueError:
-                        pass
-                result = await set_value(mixer, address, value)
-                if result:
-                    success += 1
-                await asyncio.sleep(0.05)
-
-            print(f"Batch complete: {success}/{len(commands)} succeeded")
-        finally:
-            await mixer.stop()
-            batch_path.unlink()
+        await run_batch(args)
         return
 
     # Validate arguments

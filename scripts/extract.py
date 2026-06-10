@@ -5,12 +5,11 @@ Extract targeted data from a session capture for specific agent scopes.
 Each scope returns only what that agent needs — compact enough to read in one shot.
 
 Usage:
-    python extract.py --scope metering-vocals captures/session_XXX.json
-    python extract.py --scope metering-drums captures/session_XXX.json
-    python extract.py --scope metering-instruments captures/session_XXX.json
+    python extract.py --scope metering --channels 1,2,3,5 captures/session_XXX.json
     python extract.py --scope eq captures/session_XXX.json
     python extract.py --scope eq --channels 1,2,3,5 captures/session_XXX.json
     python extract.py --scope editor captures/session_XXX.json
+    python extract.py --scope dynamics captures/session_XXX.json
     python extract.py --scope livestream captures/session_XXX.json
 """
 
@@ -445,13 +444,39 @@ Examples:
         sys.exit(1)
 
     # Load and extract
-    with open(capture_path) as f:
-        capture = json.load(f)
+    try:
+        with open(capture_path) as f:
+            capture = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error: {capture_path.name} is not valid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Scopes built around active channels need the gain staging analysis to
+    # exist — a missing analysis section means the capture wasn't analyzed,
+    # and silently returning empty data reads as "no active channels".
+    if args.scope in ('metering', 'eq', 'editor'):
+        if capture.get("analysis", {}).get("gain_staging", {}).get("active_channels") is None:
+            print(f"Error: {capture_path.name} has no analysis.gain_staging.active_channels — "
+                  f"was it captured with session_capture.py? Re-capture before extracting.",
+                  file=sys.stderr)
+            sys.exit(1)
 
     # Parse --channels if provided
     channel_list = None
     if args.channels:
-        channel_list = [int(c.strip()) for c in args.channels.split(',')]
+        try:
+            channel_list = [int(c.strip()) for c in args.channels.split(',')]
+        except ValueError:
+            print(f"Error: --channels must be comma-separated integers (got {args.channels!r})",
+                  file=sys.stderr)
+            sys.exit(1)
+        bad = [c for c in channel_list if not 1 <= c <= 32]
+        if bad:
+            print(f"Error: invalid channel number(s) {bad} — channels are 1-32", file=sys.stderr)
+            sys.exit(1)
+        missing = [c for c in channel_list if f"ch{c:02d}" not in capture.get("channels", {})]
+        if missing:
+            print(f"Warning: channel(s) {missing} not present in this capture", file=sys.stderr)
 
     # Dispatch to scope handler
     if args.scope == 'metering':

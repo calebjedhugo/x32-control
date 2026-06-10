@@ -113,11 +113,58 @@ _LABEL_RULES = [
 ]
 
 
+_known_names_cache = None
+
+
+def _load_known_names() -> Tuple[List[str], List[str]]:
+    """(vocalist names, speaking names) parsed from docs/CHANNELS.md.
+
+    CHANNELS.md is the single source of truth for personnel — names are not
+    hardcoded here. Vocalists come from the Vocalists table; speaking names
+    come from Other Inputs rows whose Source column says Speaking (labels
+    like 'Pastor / John / Brian' split on '/'). Returns ([], []) if missing.
+    """
+    global _known_names_cache
+    if _known_names_cache is not None:
+        return _known_names_cache
+    vocalists, speaking = [], []
+    channels_md = Path(__file__).parent.parent / "docs" / "CHANNELS.md"
+    try:
+        section = None
+        for line in channels_md.read_text().splitlines():
+            if line.startswith("#"):
+                header = line.strip().lower()
+                section = ("vocalists" if header.endswith("vocalists")
+                           else "other" if header.endswith("other inputs") else None)
+                continue
+            if not section or not line.startswith("|"):
+                continue
+            cols = [c.strip() for c in line.split("|")[1:-1]]
+            if not cols or not cols[0] or cols[0].lower() in ("name", "label pattern") \
+                    or set(cols[0]) <= {"-", " ", ":"}:
+                continue
+            if section == "vocalists":
+                vocalists.append(cols[0])
+            elif len(cols) > 1 and "speaking" in cols[1].lower():
+                speaking.extend(n.strip() for n in cols[0].split("/") if n.strip())
+    except OSError:
+        pass
+    _known_names_cache = (vocalists, speaking)
+    return _known_names_cache
+
+
+def load_known_vocalists() -> List[str]:
+    """Vocalist first names from docs/CHANNELS.md (see _load_known_names)."""
+    return _load_known_names()[0]
+
+
 def classify_channel(ch_name: str) -> str:
     """Classify a channel by its mixer label. Returns source type.
 
-    Labels should be descriptive (e.g. 'Kick', 'Tammy', 'Elec Gtr').
-    Unrecognized non-empty names default to 'vocal' (most common case).
+    Labels should be descriptive (e.g. 'Kick', 'Tammy', 'Elec Gtr'). Labels
+    matching a vocalist name from docs/CHANNELS.md classify as 'vocal'.
+    Anything else unrecognized returns 'unknown' so it gets surfaced to the
+    engineer instead of silently optimized with vocal targets.
     """
     if not ch_name or not ch_name.strip():
         return "unknown"
@@ -125,8 +172,12 @@ def classify_channel(ch_name: str) -> str:
     for ch_type, keywords in _LABEL_RULES:
         if any(kw in name for kw in keywords):
             return ch_type
-    # Default: person names with no instrument keyword are vocals
-    return "vocal"
+    vocalists, speaking_names = _load_known_names()
+    if any(v.lower() in name for v in vocalists):
+        return "vocal"
+    if any(s.lower() in name for s in speaking_names):
+        return "speaking"
+    return "unknown"
 
 
 def find_channels_by_type(channels: dict, target_type: str) -> List[Tuple[int, dict]]:
@@ -464,8 +515,9 @@ def check_fader_balance(ch_num: int, ch_data: dict, dcas: dict = None) -> List[F
     No fix commands - these are gain staging issues requiring preamp adjustment.
 
     When DCA data is available, computes effective fader level by multiplying
-    channel fader * DCA fader(s) in linear space (minimum DCA fader wins).
-    A channel at unity with its DCA at -10dB is effectively at -10dB.
+    channel fader * all assigned DCA faders in linear space (the X32 multiplies
+    them, it does not take the minimum). A channel at unity with its only DCA
+    at -10dB is effectively at -10dB.
     """
     findings = []
     label = ch_label(ch_num, ch_data)

@@ -5,10 +5,18 @@ Splice batch-collected RTA data into a session capture file.
 Reads a JSONL file (one RTA result per line, from rta_listen.py --append-to)
 and merges all results into the session capture's channel data.
 
+The source JSONL is kept by default so it can be re-spliced into later
+captures. Pass --delete-source to remove it after a successful splice.
+
+Exit codes: 0 = spliced at least one channel, 1 = nothing spliced (bad input,
+no valid results, or no matching channels).
+
 Usage:
     python splice_rta.py /tmp/rta_data.jsonl captures/session_XXX.json
+    python splice_rta.py --delete-source /tmp/rta_data.jsonl captures/session_XXX.json
 """
 
+import argparse
 import json
 import sys
 from datetime import datetime
@@ -16,12 +24,15 @@ from pathlib import Path
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: splice_rta.py <rta_jsonl_file> <capture_json_file>", file=sys.stderr)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Splice RTA JSONL into a session capture")
+    parser.add_argument("rta_file", help="JSONL file from rta_listen.py --append-to")
+    parser.add_argument("capture_file", help="Session capture JSON file")
+    parser.add_argument("--delete-source", action="store_true",
+                        help="Delete the RTA JSONL after a successful splice (default: keep it)")
+    args = parser.parse_args()
 
-    rta_path = Path(sys.argv[1])
-    capture_path = Path(sys.argv[2])
+    rta_path = Path(args.rta_file)
+    capture_path = Path(args.capture_file)
 
     if not rta_path.exists():
         print(f"Error: RTA file not found: {rta_path}", file=sys.stderr)
@@ -85,6 +96,12 @@ def main():
         }
         spliced += 1
 
+    if spliced == 0:
+        print(f"Error: no RTA results spliced into {capture_path.name} — "
+              f"{len(rta_results)} result(s) read but none were valid for channels in this capture. "
+              f"Source file kept.", file=sys.stderr)
+        sys.exit(1)
+
     # Update timestamp
     capture["rta_last_updated"] = datetime.now().isoformat()
 
@@ -92,10 +109,11 @@ def main():
     with open(capture_path, "w") as f:
         json.dump(capture, f, indent=2)
 
-    # Clean up temp file
-    rta_path.unlink()
+    if args.delete_source:
+        rta_path.unlink()
 
-    print(f"Spliced RTA data for {spliced} channels into {capture_path.name}", file=sys.stderr)
+    print(f"Spliced RTA data for {spliced} channels into {capture_path.name}"
+          + ("" if args.delete_source else f" (source kept: {rta_path})"), file=sys.stderr)
 
 
 if __name__ == "__main__":

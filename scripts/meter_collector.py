@@ -84,6 +84,7 @@ def main():
 
     print(f"Meter collector started (max {args.max_duration}s, stop file: {args.stop_file})", file=sys.stderr)
 
+    ended_by = "signal"
     try:
         while not shutdown:
             current = time.time()
@@ -92,11 +93,13 @@ def main():
             # Check safety timeout
             if elapsed >= args.max_duration:
                 print(f"Max duration ({args.max_duration}s) reached", file=sys.stderr)
+                ended_by = "max_duration"
                 break
 
             # Check sentinel file
             if stop_file.exists():
                 print("Stop file detected", file=sys.stderr)
+                ended_by = "stop_file"
                 break
 
             # Send meter requests every 100ms
@@ -171,6 +174,7 @@ def main():
         "samples_received": samples_received,
         "started_at": started_at,
         "stopped_at": stopped_at,
+        "ended_by": ended_by,
     }
 
     # Write output

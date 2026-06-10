@@ -50,6 +50,11 @@ update meter peaks.
 4=2.5:1, 5=3:1, 6=4:1, 7=5:1, 8=7:1, 9=10:1, 10=20:1, 11=100:1. Return the index as the raw value.
 See `docs/TECHNICAL.md` for full conversion tables.
 
+**Batch validation will reject** (so never suggest): mute toggles (`/mix/on`), routing flags
+(`/mix/st`, `/mix/mono`), FX type changes, DCA changes, scene/console operations, values outside
+0.0-1.0 (or outside an index range), and raw deltas over 0.34 vs `old_value` (~10dB). If something
+in those categories looks wrong, put it in `notes` for the engineer instead of `changes`.
+
 ## Output file (JSON — batch-ready for the apply worker)
 
 Write your suggestions to the **output file path given in your dispatch envelope** (e.g.
@@ -77,6 +82,8 @@ The file is a single JSON object:
 ```
 - `address`/`value` are raw OSC (0.0-1.0 normalized, or an index where noted). The apply worker
   sends these as-is.
+- **Always fill in `old_value`, `human`, `ch`, `label`, and `reason`** — the changelog is written
+  from these fields by control.py, and `old_value` feeds the drastic-move validation.
 - Set `trim_db` to the dB delta (`new_trim_dB - old_trim_dB`) ONLY on `/ch/XX/preamp/trim` changes;
   otherwise `null`.
 - If the channel/bus looks good, don't invent a change — record it in `notes`. Don't suggest changes

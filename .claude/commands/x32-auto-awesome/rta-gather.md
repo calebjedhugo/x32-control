@@ -45,8 +45,14 @@ When done (or if no channels needed retry): `touch /tmp/rta_retry_done`
   previously-silent channels the full `--until-confident` duration in case musicians started playing.
 - Timing: quick pass should finish within 5 minutes; retry pass gets another 5 minutes. Total
   budget: 10 minutes.
+- **Budget exhaustion**: if you hit ~5 minutes mid-pass-1, STOP scanning, `touch /tmp/rta_quick_done`
+  anyway, and skip straight to touching `/tmp/rta_retry_done` — partial data already in the JSONL is
+  still usable, and the orchestrator must not be left polling for a file that will never appear.
+  Same rule at the 10-minute mark for pass 2: stop and `touch /tmp/rta_retry_done`. Count unscanned
+  channels as silent in your return line and append ", budget hit" to it.
 
 ## One-line return
 
 Return exactly one line: `rta-gather: done (pass1 <a>, pass2 <b>, silent <c>)` with the counts of
-channels that succeeded in pass 1, succeeded in pass 2, and were silent both times.
+channels that succeeded in pass 1, succeeded in pass 2, and were silent both times. Append
+`, budget hit` if you stopped early on the time budget.

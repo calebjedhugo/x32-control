@@ -56,15 +56,23 @@ Extracts targeted subsets from a session capture. Used by auto-awesome subagents
 ```bash
 python scripts/control.py --batch changes.json
 python scripts/control.py --batch changes.json --dry-run
+python scripts/control.py --batch changes.json --changelog captures/changelog_2026-06-10.jsonl --phase eq --iter 2
 ```
-Executes all changes in one mixer connection. File format: `[{"address": "/ch/01/mix/fader", "value": 0.75}, ...]`. Deletes the batch file after execution.
+Executes all changes in one mixer connection. File format: `[{"address": "/ch/01/eq/2/g", "value": 0.55, "old_value": 0.5, "human": "+1.5 dB (was 0 dB)", "ch": "ch01", "label": "Tammy", "reason": "..."}, ...]` (only `address`/`value` required). Validates everything before applying: address allowlist, 0.0-1.0 value ranges, integer indices (compressor ratio 0-11, knee 0-5), and refuses mute/scene/routing/DCA changes and drastic moves (>0.34 raw vs `old_value`). With `--changelog`, appends one JSONL line per applied change. Deletes the batch file on completion; unapplied commands go to `<file>.failed.json`. Exit codes: 0 = all applied, 1 = load error, 2 = validation failed (batch kept), 3 = partial failure. Last stdout line is machine-readable: `BATCH_RESULT {...}`.
 
 ### RTA Batch Collection
 ```bash
 python scripts/rta_listen.py --channel 5 --until-confident --append-to /tmp/rta_batch.jsonl
 python scripts/splice_rta.py /tmp/rta_batch.jsonl captures/session_XXX.json
 ```
-`--append-to` collects RTA results to a JSONL file (one line per channel). `splice_rta.py` merges all results into a capture file and deletes the JSONL temp file.
+`--append-to` collects RTA results to a JSONL file (one line per channel). `splice_rta.py` merges all results into a capture file; the JSONL source is **kept** so it can be re-spliced into later captures (`--delete-source` removes it). Exits 1 if nothing was spliced.
+
+### Auto-Awesome Pass Setup
+```bash
+python scripts/prepare_pass.py captures/session_XXX.json --mode full --rta-status pending
+python scripts/prepare_pass.py captures/session_XXX.json --mode focused:drums --rta-status present --pass-num 2
+```
+Generates the worker context brief (`/tmp/agent_prompt_context_brief.md`): classifies active channels by label, builds per-group `--channels` lists, loads gain targets from VENUE.md. Prints a one-line summary; `UNKNOWN=` channels are excluded from worker groups and should be flagged to the engineer.
 
 ### Other Commands
 | Command | Description |
@@ -111,9 +119,10 @@ For raw control: `python scripts/control.py <address> <value>` (positional args,
 - `scripts/diff_sessions.py` - **Session diff**: compares two captures (offline)
 - `scripts/capture.py` - Meter-only capture (rarely needed directly)
 - `scripts/query.py` - Read mixer state
-- `scripts/control.py` - Modify parameters (supports `--batch` for bulk changes)
+- `scripts/control.py` - Modify parameters (`--batch` for validated bulk changes + changelog)
 - `scripts/extract.py` - Extract scoped data from session captures
-- `scripts/splice_rta.py` - Merge batch RTA data into session capture
+- `scripts/splice_rta.py` - Merge batch RTA data into session capture (source kept by default)
+- `scripts/prepare_pass.py` - Generate the auto-awesome context brief (classification, channel lists, gain targets)
 - `scripts/stream_guard.py` - YouTube livestream true-peak monitor + matrix fader control
 - `scripts/snapshot.py` - Full state dump
 

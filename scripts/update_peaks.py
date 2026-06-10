@@ -129,16 +129,25 @@ Examples:
 
     args = parser.parse_args()
 
-    # Parse offsets
+    # Parse and validate offsets — fail fast, don't silently skip bad input
     trim_offsets = {}
     for pair in args.offsets:
         try:
             ch_str, db_str = pair.split(":")
-            trim_offsets[int(ch_str)] = float(db_str)
+            ch_num = int(ch_str)
+            offset_db = float(db_str)
         except (ValueError, IndexError):
             print(f"Invalid offset format '{pair}' — expected channel:dB (e.g. 5:+3.0)",
                   file=sys.stderr)
             sys.exit(1)
+        if not 1 <= ch_num <= 32:
+            print(f"Invalid channel {ch_num} in '{pair}' — channels are 1-32", file=sys.stderr)
+            sys.exit(1)
+        if abs(offset_db) > 20:
+            print(f"Implausible offset {offset_db:+.1f}dB in '{pair}' — trim moves should be "
+                  f"small; refusing anything beyond ±20dB", file=sys.stderr)
+            sys.exit(1)
+        trim_offsets[ch_num] = offset_db
 
     # Load capture
     capture_path = Path(args.capture)
