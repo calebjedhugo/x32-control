@@ -24,9 +24,13 @@ Usage:
     python control.py --batch changes.json --changelog captures/changelog_2026-06-10.jsonl --phase eq --iter 2
 
 Batch mode validates every command before applying anything (address allowlist,
-value ranges, integer indices, mute/scene/routing blocked) and exits:
+value ranges, integer indices, mute/scene/routing blocked), then PRE-WRITE
+VERIFIES each command against the live board: the claimed old_value must match
+the live read (tolerance 0.03), and move size is checked against the live
+value, not the claim. Exits:
     0 = all applied, 1 = load error, 2 = validation failed (batch kept),
-    3 = partial failure (remainder in <file>.failed.json)
+    3 = partial (send failures in <file>.failed.json; pre-write refusals in
+        BATCH_RESULT.refused_detail — never retried)
 The last stdout line is machine-readable: BATCH_RESULT {...json...}
 """
 
@@ -89,7 +93,7 @@ def _resolve_eq_freq(args):
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import load_config, get_mixer, parse_channel, parse_bus, db_to_fader, fader_to_db, format_db, ratio_value_to_index
+from common import load_config, get_mixer, parse_channel, parse_bus, db_to_fader, fader_to_db, format_db, ratio_value_to_index, reliable_query
 
 
 # Addresses where readback after send is known to be unreliable.
@@ -210,6 +214,11 @@ _BATCH_INT_RULES = [
 # 2-3dB is the apply worker's job, this just catches runaway suggestions.
 _MAX_RAW_DELTA = 0.34
 
+# Pre-write verification tolerance. The X32 quantizes some params
+# (e.g. 0.72 stored as 0.725), so claimed old_value won't match the live
+# read exactly. 0.03 covers quantization without masking real disagreement.
+_PRE_WRITE_TOLERANCE = 0.03
+
 
 def _coerce_batch_value(value):
     """Normalize a batch value to a number (strings like '0.5' become floats)."""
@@ -299,7 +308,9 @@ def _append_changelog(changelog_path, cmd, phase, iteration):
 async def run_batch(args):
     """Run --batch mode. Exit codes: 0 = all applied, 1 = usage/load error,
     2 = validation failed (nothing applied, batch file kept),
-    3 = partial failure (failures written to <batch>.failed.json)."""
+    3 = partial: some commands failed (written to <batch>.failed.json) or were
+    refused by pre-write verification (listed in BATCH_RESULT.refused_detail —
+    do NOT retry those; the analysis was based on wrong data)."""
     batch_path = Path(args.batch)
     if not batch_path.exists():
         print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
@@ -340,10 +351,40 @@ async def run_batch(args):
 
     applied = 0
     failed_cmds = []
+    refused = []
     mixer = await get_mixer()
     try:
         for cmd in commands:
-            ok = await set_value(mixer, cmd["address"], cmd["value"])
+            address, value = cmd["address"], cmd["value"]
+
+            # Pre-write verification: the analysis worker's old_value claim is
+            # never load-bearing — read the board and compare. A mismatch means
+            # the worker misread/hallucinated its data, the data was stale, or
+            # the engineer changed the param; in every case the suggestion was
+            # computed from a wrong starting point, so refuse it.
+            live = await reliable_query(mixer, address, default=None)
+            if isinstance(live, (int, float)):
+                claimed_old = _coerce_batch_value(cmd.get("old_value"))
+                if isinstance(claimed_old, (int, float)) \
+                        and abs(float(live) - float(claimed_old)) > _PRE_WRITE_TOLERANCE:
+                    if _should_skip_readback(address):
+                        # Known-unreliable read addresses: warn, don't refuse
+                        print(f"WARNING: {address} live={live} != old_value={claimed_old} "
+                              f"(read unreliable for this address — applying anyway)", file=sys.stderr)
+                    else:
+                        print(f"REFUSED {address}: old_value={claimed_old} but board reads "
+                              f"{live} — suggestion was computed from wrong data", file=sys.stderr)
+                        refused.append({**cmd, "live_value": live, "refusal": "old_value mismatch"})
+                        continue
+                # Authoritative drastic-move check against the LIVE value
+                if not _should_skip_readback(address) \
+                        and abs(float(value) - float(live)) > _MAX_RAW_DELTA:
+                    print(f"REFUSED {address}: move from live {live} to {value} is drastic "
+                          f"(delta {abs(float(value) - float(live)):.2f} > {_MAX_RAW_DELTA})", file=sys.stderr)
+                    refused.append({**cmd, "live_value": live, "refusal": "drastic vs live value"})
+                    continue
+
+            ok = await set_value(mixer, address, value)
             if ok:
                 applied += 1
                 if changelog_path:
@@ -354,7 +395,13 @@ async def run_batch(args):
     finally:
         await mixer.stop()
 
-    result = {"total": len(commands), "applied": applied, "failed": len(failed_cmds)}
+    result = {"total": len(commands), "applied": applied, "failed": len(failed_cmds),
+              "refused": len(refused)}
+    if refused:
+        result["refused_detail"] = [
+            {"address": r["address"], "old_value": r.get("old_value"),
+             "live_value": r["live_value"], "refusal": r["refusal"]} for r in refused
+        ]
     if changelog_path:
         result["changelog"] = str(changelog_path)
         result["changelog_appended"] = applied
@@ -365,9 +412,10 @@ async def run_batch(args):
         result["failed_file"] = str(failed_path)
     batch_path.unlink()
 
-    print(f"Batch complete: {applied}/{len(commands)} succeeded", file=sys.stderr)
+    print(f"Batch complete: {applied}/{len(commands)} succeeded"
+          + (f", {len(refused)} refused" if refused else ""), file=sys.stderr)
     print(f"BATCH_RESULT {json.dumps(result)}")
-    if failed_cmds:
+    if failed_cmds or refused:
         sys.exit(3)
 
 

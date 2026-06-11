@@ -81,6 +81,18 @@ async def query_channel_overview(state, ch_addr):
         return {"error": str(e)}
 
 
+def _val(value, digits=3):
+    """Round a queried value. Failed reads (None) stay None — output shows
+    null, never a plausible-looking default that a reader could mistake for
+    the real board state."""
+    return round(value, digits) if isinstance(value, (int, float)) else None
+
+
+def _on_off(value):
+    """1/0 -> bool. Failed reads stay None (unknown), not False."""
+    return (value == 1) if value is not None else None
+
+
 async def query_channel_eq(mixer, ch_addr):
     """
     Query channel EQ settings using direct mixer queries.
@@ -96,19 +108,19 @@ async def query_channel_eq(mixer, ch_addr):
         # Extract channel number for OSC address
         ch_num = int(ch_addr.split('/')[-1])
 
-        eq_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/on', default=0) == 1
+        eq_on = _on_off(await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/on', default=None))
         bands = []
 
         for band_num in range(1, 5):
-            freq = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/f', default=0.5)
-            gain = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/g', default=0.5)
-            q = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/q', default=0.5)
+            freq = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/f', default=None)
+            gain = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/g', default=None)
+            q = await reliable_query(mixer, f'/ch/{ch_num:02d}/eq/{band_num}/q', default=None)
 
             bands.append({
                 "band": band_num,
-                "freq": round(freq, 3) if freq else 0.5,
-                "gain": round(gain, 3) if gain else 0.5,
-                "q": round(q, 3) if q else 0.5
+                "freq": _val(freq),
+                "gain": _val(gain),
+                "q": _val(q)
             })
 
         return {
@@ -137,42 +149,42 @@ async def query_channel_dynamics(mixer, ch_addr):
         ch_num = int(ch_addr.split('/')[-1])
 
         # Gate
-        gate_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/on', default=0) == 1
-        gate_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/thr', default=0.5)
+        gate_on = _on_off(await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/on', default=None))
+        gate_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/gate/thr', default=None)
 
         # Compressor
-        comp_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/on', default=0) == 1
-        comp_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/thr', default=0.5)
-        comp_ratio_idx = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/ratio', default=5)
-        comp_attack = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/attack', default=0.5)
-        comp_release = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/release', default=0.5)
+        comp_on = _on_off(await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/on', default=None))
+        comp_thr = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/thr', default=None)
+        comp_ratio_idx = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/ratio', default=None)
+        comp_attack = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/attack', default=None)
+        comp_release = await reliable_query(mixer, f'/ch/{ch_num:02d}/dyn/release', default=None)
 
-        # Convert ratio index to actual value
-        comp_ratio = ratio_index_to_value(int(comp_ratio_idx)) if comp_ratio_idx is not None else 3
+        # Convert ratio index to actual value (None = unreadable)
+        comp_ratio = ratio_index_to_value(int(comp_ratio_idx)) if comp_ratio_idx is not None else None
 
         # HPF (High-Pass Filter)
-        hpf_on = await reliable_query(mixer, f'/ch/{ch_num:02d}/preamp/hpon', default=0) == 1
-        hpf_freq_val = await reliable_query(mixer, f'/ch/{ch_num:02d}/preamp/hpf', default=0.5)
-        hpf_freq_hz = hpf_value_to_hz(hpf_freq_val) if hpf_freq_val is not None else 80
+        hpf_on = _on_off(await reliable_query(mixer, f'/ch/{ch_num:02d}/preamp/hpon', default=None))
+        hpf_freq_val = await reliable_query(mixer, f'/ch/{ch_num:02d}/preamp/hpf', default=None)
+        hpf_freq_hz = hpf_value_to_hz(hpf_freq_val) if hpf_freq_val is not None else None
 
         return {
             "channel": ch_addr,
             "dynamics": {
                 "hpf": {
                     "on": hpf_on,
-                    "freq_value": round(hpf_freq_val, 3) if hpf_freq_val else 0.5,
+                    "freq_value": _val(hpf_freq_val),
                     "freq_hz": hpf_freq_hz
                 },
                 "gate": {
                     "on": gate_on,
-                    "threshold": round(gate_thr, 3) if gate_thr else 0.5
+                    "threshold": _val(gate_thr)
                 },
                 "comp": {
                     "on": comp_on,
-                    "threshold": round(comp_thr, 3) if comp_thr else 0.5,
-                    "ratio": f"{comp_ratio}:1",
-                    "attack": round(comp_attack, 3) if comp_attack else 0.5,
-                    "release": round(comp_release, 3) if comp_release else 0.5
+                    "threshold": _val(comp_thr),
+                    "ratio": f"{comp_ratio}:1" if comp_ratio is not None else None,
+                    "attack": _val(comp_attack),
+                    "release": _val(comp_release)
                 }
             }
         }
@@ -243,19 +255,19 @@ async def query_main_eq(mixer):
         Dictionary with EQ info
     """
     try:
-        eq_on = await reliable_query(mixer, '/main/st/eq/on', default=0) == 1
+        eq_on = _on_off(await reliable_query(mixer, '/main/st/eq/on', default=None))
         bands = []
 
         for band_num in range(1, 7):  # Main has 6 bands
-            freq = await reliable_query(mixer, f'/main/st/eq/{band_num}/f', default=0.5)
-            gain = await reliable_query(mixer, f'/main/st/eq/{band_num}/g', default=0.5)
-            q = await reliable_query(mixer, f'/main/st/eq/{band_num}/q', default=0.5)
+            freq = await reliable_query(mixer, f'/main/st/eq/{band_num}/f', default=None)
+            gain = await reliable_query(mixer, f'/main/st/eq/{band_num}/g', default=None)
+            q = await reliable_query(mixer, f'/main/st/eq/{band_num}/q', default=None)
 
             bands.append({
                 "band": band_num,
-                "freq": round(freq, 3) if freq else 0.5,
-                "gain": round(gain, 3) if gain else 0.5,
-                "q": round(q, 3) if q else 0.5
+                "freq": _val(freq),
+                "gain": _val(gain),
+                "q": _val(q)
             })
 
         return {
@@ -280,20 +292,20 @@ async def query_main_dynamics(mixer):
         Dictionary with dynamics info
     """
     try:
-        comp_on = await reliable_query(mixer, '/main/st/dyn/on', default=0) == 1
-        comp_thr = await reliable_query(mixer, '/main/st/dyn/thr', default=0.5)
-        comp_ratio_idx = await reliable_query(mixer, '/main/st/dyn/ratio', default=5)
+        comp_on = _on_off(await reliable_query(mixer, '/main/st/dyn/on', default=None))
+        comp_thr = await reliable_query(mixer, '/main/st/dyn/thr', default=None)
+        comp_ratio_idx = await reliable_query(mixer, '/main/st/dyn/ratio', default=None)
 
-        # Convert ratio index to actual value (same as channel dynamics)
-        comp_ratio = ratio_index_to_value(int(comp_ratio_idx)) if comp_ratio_idx is not None else 3
+        # Convert ratio index to actual value (None = unreadable)
+        comp_ratio = ratio_index_to_value(int(comp_ratio_idx)) if comp_ratio_idx is not None else None
 
         return {
             "target": "main/st",
             "dynamics": {
                 "comp": {
                     "on": comp_on,
-                    "threshold": round(comp_thr, 3) if comp_thr else 0.5,
-                    "ratio": f"{comp_ratio}:1"
+                    "threshold": _val(comp_thr),
+                    "ratio": f"{comp_ratio}:1" if comp_ratio is not None else None
                 }
             }
         }
@@ -313,15 +325,15 @@ async def query_fx_slot(mixer, fx_num):
         Dictionary with FX info
     """
     try:
-        # Get FX type
-        fx_type = await reliable_query(mixer, f'/fx/{fx_num}/type', default=0)
+        # Get FX type (None = unreadable; 0 is a real type, never default to it)
+        fx_type = await reliable_query(mixer, f'/fx/{fx_num}/type', default=None)
 
-        # Get first 24 parameters (most effects use fewer)
+        # Get first 24 parameters (most effects use fewer). Unreadable params
+        # appear as null — explicitly unknown, not silently missing.
         params = {}
         for param_num in range(1, 25):
             value = await reliable_query(mixer, f'/fx/{fx_num}/par/{param_num:02d}', default=None)
-            if value is not None:
-                params[param_num] = round(value, 3)
+            params[param_num] = _val(value)
 
         return {
             "fx_slot": fx_num,
@@ -347,10 +359,11 @@ async def query_fx_return(mixer, state, fxrtn_num):
     try:
         fxrtn_addr = f"/fxrtn/{fxrtn_num:02d}"
 
-        # Try state first for fader/name (usually works), fallback to query
+        # Try state first for fader/name (usually works), fallback to query.
+        # An unreadable fader stays None — 0.0 would read as "pulled down".
         fader = get_state_value(state, fxrtn_addr, "mix_fader", None)
         if fader is None:
-            fader = await reliable_query(mixer, f'/fxrtn/{fxrtn_num:02d}/mix/fader', default=0.0)
+            fader = await reliable_query(mixer, f'/fxrtn/{fxrtn_num:02d}/mix/fader', default=None)
 
         mute = get_state_value(state, fxrtn_addr, "mix_on", True) == False
         name = get_state_value(state, fxrtn_addr, "config_name", "")
@@ -358,8 +371,8 @@ async def query_fx_return(mixer, state, fxrtn_num):
         return {
             "fx_return": fxrtn_num,
             "name": name,
-            "fader": round(fader, 3) if fader else 0.0,
-            "fader_db": format_db(fader) if fader else "-inf dB",
+            "fader": _val(fader),
+            "fader_db": format_db(fader) if fader is not None else None,
             "mute": mute
         }
     except Exception as e:

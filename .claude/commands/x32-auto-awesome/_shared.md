@@ -50,6 +50,11 @@ update meter peaks.
 4=2.5:1, 5=3:1, 6=4:1, 7=5:1, 8=7:1, 9=10:1, 10=20:1, 11=100:1. Return the index as the raw value.
 See `docs/TECHNICAL.md` for full conversion tables.
 
+**`null` means unreadable, never a value.** If a field in your extract or a query result is null,
+the read failed — note it and skip that parameter. Never substitute a guess or a "typical" value.
+**Copy `old_value` directly from your extract** — the apply step verifies it against the live board
+and refuses any change whose `old_value` doesn't match reality.
+
 **Batch validation will reject** (so never suggest): mute toggles (`/mix/on`), routing flags
 (`/mix/st`, `/mix/mono`), FX type changes, DCA changes, scene/console operations, values outside
 0.0-1.0 (or outside an index range), and raw deltas over 0.34 vs `old_value` (~10dB). If something
