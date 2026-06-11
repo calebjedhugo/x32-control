@@ -2,10 +2,11 @@
 
 ## TODO (next session — read this first)
 
-1. **Restore FX7 amp sim (targeted guitar session planned).** A worker's fabricated old_value left
-   the amp sim degraded on 2026-06-10: par07 (Low) is 0.55, should be ~0.725; par08 (High) is 0.35,
-   was 0.4 before the bad write. The engineer wants a dedicated guitar session — restore these as
-   the starting point, then tune by ear with him. Don't "fix" FX7 in a general pass.
+1. **Restore FX7 amp sim (next time at the board, alongside item 2).** A worker's fabricated
+   old_value left the amp sim degraded on 2026-06-10: par07 (Low) is 0.55, should be ~0.725;
+   par08 (High) is 0.35, was 0.4 before the bad write. Restore both values and have the engineer
+   listen. (Engineer decision 2026-06-10: do this with the other fixes — no separate guitar
+   session needed first.)
 2. **Live-verify the new write safeguards (added 2026-06-10, untested against the board):**
    pre-write verification in `control.py --batch` (refuses old_value mismatches vs live reads) and
    `query.py` null-on-failure (failed reads now return null, never 0.5-style defaults). First time
