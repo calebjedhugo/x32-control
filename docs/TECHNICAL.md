@@ -269,15 +269,35 @@ python scripts/query.py --fx 1
 
 ## Known Issues
 
+- **`/meters/0` omits some channels entirely (OPEN, found 2026-06-14)**: Certain channels read a
+  flat 0.0 channel meter while they carry real signal. Confirmed on **ch19 "Tammy Guitar"** and
+  **ch20 "Acust Guitar"** (engineer confirmed strong signal; RTA tapped a valid guitar spectrum on
+  ch19 in the same window the meter showed 0.0). **It is NOT a parser index bug.** Raw `/meters/0`
+  blob dump (70 floats) with signal present: ch1→idx0=0.216 ✓, ch32→idx62=0.147 ✓, but ch19's
+  position is 0.0 under *both* the current 2-per-channel mapping (idx36) *and* a 1-per-channel
+  mapping (idx18) — the signal is simply absent from the blob, not shifted. Hot indices were
+  0,2,3,12,16,17,24-31,40,42,43,46,48,52-67. Likely cause: `/meters/0` taps a local-input/pre-source
+  stage, and ch19/ch20 are fed from a routing source that bypasses that tap (ch19 source=10, ch20
+  source=16, ch32 source=22 — source number alone doesn't cleanly split working vs broken, so the
+  routing behind those local inputs is the thing to check). **Impact**: gain-staging/active-channel
+  detection silently drops these channels; metering workers skip them. **Next step (needs board +
+  controlled test, do NOT guess-fix the parser — ch1/ch32 read correctly today)**: solo one channel
+  at a time and watch which blob index lights, to map index→channel for the mid-range; OR switch
+  active-channel detection to a signal source that reflects post-source processing (RTA presence, or
+  a different meter bank such as `/meters/1`). Until fixed: if a channel reads 0.0 but RTA/console
+  show signal, trust the console.
+
 - **OSC response misattribution (FIXED Mar 2026)**: The upstream `behringer_mixer` library stored all responses in a single global buffer, discarding the response address. With ~2000 queries per capture, responses arrived out of order and got attributed to the wrong query — 46% individual failure rate. Retries masked it but couldn't fix it: a "successful" retry could read a stale response from a different address. **Fix**: Vendored the library to `lib/behringer_mixer/` and added per-address response matching in `mixer_base.py`. Each `query()` now waits for its specific address via `asyncio.Event`. Retries reduced from 8-10 to 3 (only covering UDP packet loss). Warmup reduced from 3 queries to 1.
 
 - **Query failures produce default values**: When all retries fail, `reliable_query()` returns the caller's `default` parameter. Common corrupted defaults: EQ freq → 0.5 (632Hz), comp/gate on → 0 (OFF), FX type → 0 (Hall Reverb). Mitigations:
   - **Background keepalive**: `/xremote` sent every 2s during capture keeps the UDP connection hot.
-  - **Failure tracking**: All failed addresses logged in `metadata.query_failures`.
+  - **Failure tracking**: `metadata.query_failures` is **always present** (since 2026-06-14) with `count` and `addresses` — `count == 0` means a clean capture. Gate auto-apply on it. (Before 2026-06-14 the key was omitted when zero failures, so an absent key was ambiguous.)
   - **Post-capture validation**: `validate_capture()` flags suspicious patterns (e.g., EQ freq at 0.5 with non-default gain).
   - **Diff suspicious flags**: `diff_sessions.py` marks changes TO/FROM default values with `[?]` prefix.
 
 ## Changelog
+
+- **Jun 14, 2026 (at the board)**: Verified the Jun-10 safeguards live (pre-write verification refuses fabricated `old_value` against a live read; confirmed across matching/gross-mismatch/subtle-mismatch cases). Restored FX7 amp sim (par07→0.725, par08→0.4) — note this is live-only, the degraded values persist in the saved scene. `session_capture.py` now **always** writes `metadata.query_failures` (even `count: 0`) so consumers can reliably gate trust. Found two open issues: (1) `/meters/0` drops some channels entirely (see Known Issues — ch19/ch20); (2) the planned `session_capture.py` null refactor is downgraded — with the always-present failure count (0 is typical post-Mar-fix) plus pre-write verification, the value no longer justifies the analyze/extract/diff cascade risk. Revisit only if failures become common again.
 
 - **Jun 10, 2026 (evening, post-session)**: Pre-write verification in `control.py --batch` — every command's claimed `old_value` is checked against a live board read before sending (tolerance 0.03; mismatches refused, listed in `BATCH_RESULT.refused_detail`), and the drastic-move check now runs against the live value. Motivated by transcript forensics on the day's session: a worker fabricated `old_value: 0.5` for `/fx/7/par/07` despite its extract showing 0.725, turning a "+0.05 nudge" into a real −0.175 cut. Also `query.py`: failed reads now return null (with `_val`/`_on_off` helpers) instead of plausible defaults (0.5 / ratio 5 / type 0); FX params render unreadable as null instead of omitting. **UNTESTED LIVE — see the TODO in docs/CORRECTIONS.md.** `session_capture.py` still has ~60 plausible-default sites (deferred, cascades into analyze/extract/diff).
 

@@ -912,15 +912,15 @@ Example:
                 }
         result["analysis"]["fx_routing"] = fx_routing
 
-        # Query failure tracking
-        total_queries = len(query_failures) + 1  # approximate — failures are tracked, successes are not
+        # Query failure tracking — ALWAYS write the key, even when count is 0.
+        # An absent key is ambiguous (zero failures? old format? tracking broken?);
+        # an explicit count==0 lets consumers reliably gate trust on a capture
+        # (e.g. "only auto-apply from captures with query_failures.count == 0").
+        result["metadata"]["query_failures"] = {
+            "count": len(query_failures),
+            "addresses": query_failures,
+        }
         if query_failures:
-            # Estimate total queries from capture scope (rough: 32ch × ~30 queries + 16bus × ~25 + ...)
-            # Use failure count relative to known query volume
-            result["metadata"]["query_failures"] = {
-                "count": len(query_failures),
-                "addresses": query_failures,
-            }
             print(f"\nQuery failures: {len(query_failures)} addresses failed all retries", file=sys.stderr)
             for addr in query_failures[:10]:
                 print(f"  {addr}", file=sys.stderr)

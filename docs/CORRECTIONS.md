@@ -1,22 +1,29 @@
 # Session Corrections Log
 
-## TODO (next session — read this first)
+## TODO
 
-1. **Restore FX7 amp sim (next time at the board, alongside item 2).** A worker's fabricated
-   old_value left the amp sim degraded on 2026-06-10: par07 (Low) is 0.55, should be ~0.725;
-   par08 (High) is 0.35, was 0.4 before the bad write. Restore both values and have the engineer
-   listen. (Engineer decision 2026-06-10: do this with the other fixes — no separate guitar
-   session needed first.)
-2. **Live-verify the new write safeguards (added 2026-06-10, untested against the board):**
-   pre-write verification in `control.py --batch` (refuses old_value mismatches vs live reads) and
-   `query.py` null-on-failure (failed reads now return null, never 0.5-style defaults). First time
-   at the board: run a no-op batch (set a param to its current value) and confirm it applies, then
-   one with a deliberately wrong old_value and confirm it's refused.
-3. **session_capture.py still writes plausible defaults on failed reads** (~60 sites, e.g. EQ gain
-   defaults to 0.5) — failures are counted in `metadata.query_failures` but the capture body shows
-   fake values. Refactoring to nulls cascades into analyze/extract/diff and needs board time to
-   verify. Until then: treat any capture with `query_failures.count > 0` with suspicion; the
-   pre-write check in control.py is the backstop.
+### Open
+1. **`/meters/0` drops some channels entirely (found 2026-06-14, needs board + controlled test).**
+   ch19 "Tammy Guitar" and ch20 "Acust Guitar" read flat 0.0 channel meters while carrying real
+   signal (RTA-confirmed, engineer-confirmed). Not a parser bug — signal is absent from the blob
+   under both 2-per-ch and 1-per-ch layouts; likely a tap-point/routing issue. Full detail +
+   next steps in TECHNICAL.md → Known Issues. Until fixed: if a channel reads 0.0 but RTA/console
+   show signal, trust the console; don't gain-stage that channel from the meter.
+
+### Downgraded (was item 3 — do NOT just execute it)
+- **session_capture.py plausible defaults → null refactor: shelved 2026-06-14.** Rationale: failures
+  are rare post-Mar-2026 fix (0 in the 2026-06-14 session), `metadata.query_failures.count` is now
+  always emitted so a clean capture is provable, and `control.py` pre-write verification + `query.py`
+  nulls already backstop bad data reaching the board. The ~60-site refactor cascades into
+  analyze/extract/diff math (null arithmetic) for marginal gain. Revisit ONLY if failure rates climb
+  again — then do it with the downstream null-tolerance changes, not in isolation.
+
+### Done 2026-06-14 (at the board)
+- ✅ Restored FX7 amp sim: par07→0.725, par08→0.4. **Live-only** — the degraded 0.55/0.35 persist in
+  the saved scene; re-save the scene to make it stick (engineer's call — not done by Claude).
+- ✅ Live-verified pre-write verification (matching old_value applies; gross mismatch caught by
+  static validation; subtle mismatch caught by the live pre-write read — the exact Sunday scenario).
+- ✅ session_capture.py now always writes `metadata.query_failures` (even count 0).
 
 *Wiped 2026-03-15: All prior entries (2026-02-25 through 2026-03-15) were recorded with a buggy capture script that produced corrupted EQ/parameter readbacks. Patterns derived from that data are unreliable. Fresh start with fixed capture script.*
 
