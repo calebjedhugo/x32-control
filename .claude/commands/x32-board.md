@@ -17,6 +17,24 @@ once; then you stay in an interactive loop handling ad-hoc requests with full co
 guardrails — until the user is done. This is a single persistent agent (no worker dispatch); the
 context is *supposed* to be resident — that's the whole point.
 
+## ⚠️ ONE-TIME: verify the RTA lock fix (added 2026-06-24 — remove once confirmed)
+
+The RTA `/meters/4` corrupt-lock fix (renew-not-hammer + cooldown + lock detection in
+`scripts/rta_listen.py`) was merged but **never verified on a live board with signal**. Next time
+you're at the desk with musicians playing, before the engineer gets deep into requests:
+
+1. With a low source (bass) and a bright source (vocal/piano-high) both playing, scan each
+   repeatedly back-to-back and confirm their **absolute** band spectra (`bands[*].peak`) stay
+   distinct — the lock no longer reproduces under scan load.
+2. Scan a silent channel and confirm it reads near-zero (not a loud "locked" blob).
+3. If a scan ever returns `"RTA feed corrupt — cool down and rescan"`, that's the new detector
+   working — `--retry-on-lock` should auto-recover after ~18s.
+
+Tell the engineer the result in plain English ("RTA's holding up under repeated scans"), then delete
+this block from the skill.
+
+---
+
 ## Setup
 
 ```bash
