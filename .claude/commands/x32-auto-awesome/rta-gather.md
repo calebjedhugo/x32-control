@@ -17,14 +17,31 @@ cd "/Users/calebhugo/Development/personal dev work.nosync/x32-control"
 **Channels to scan** are listed in your dispatch envelope. Scan one at a time — X32 hardware
 limitation. Skip speaking channels if no signal (they rarely benefit from frequency analysis).
 
+### ⚠️ Don't hammer the desk (this is what locks /meters/4)
+
+Back-to-back, zero-gap scanning of every channel is the prime trigger for the corrupt `/meters/4`
+**lock** — a self-inflicted meter-subscription pile-up, NOT a second X32 client (see
+docs/CORRECTIONS.md 2026-06-24). So:
+
+- **Space the scans.** Always pass `--cooldown 2` so each scan starts ~2s after the last released
+  the feed. Never fire the next `rta_listen.py` the instant the previous one exits.
+- **Let `rta_listen.py` self-recover.** Always pass `--retry-on-lock`; on a detected lock it cools
+  down ~18s with zero traffic and does ONE clean rescan on the same connection.
+- **A lock is "cool down + retry," NOT "abort, RTA unavailable."** If a channel comes back
+  `"valid": false` with `"validation_notes": "RTA feed corrupt — cool down and rescan"`, wait
+  **15–20s with no scanning at all**, then retry that ONE channel once. Do not pile on more
+  subscriptions, do not blame external software, and do not declare RTA dead for the session — the
+  first scan of a fresh feed is reliable; only scan load degrades it.
+
 ## Pass 1: Quick scan (with silence early-exit)
 
 For each channel:
 ```bash
-venv/bin/python scripts/rta_listen.py --channel N --until-confident --silence-timeout 3 --append-to /tmp/rta_batch_quick.jsonl
+venv/bin/python scripts/rta_listen.py --channel N --until-confident --silence-timeout 3 --cooldown 2 --retry-on-lock --append-to /tmp/rta_batch_quick.jsonl
 ```
 Track which channels exit with `"silence_exit": true` in the output (grep stderr for
-"silence timeout" or check the JSONL line). Keep a list of silent channels.
+"silence timeout" or check the JSONL line). Keep a list of silent channels. If a channel comes back
+with `"RTA feed corrupt"`, sleep 15–20s before scanning the next channel, then retry that one once.
 
 When ALL channels are scanned: `touch /tmp/rta_quick_done`
 
@@ -32,10 +49,10 @@ When ALL channels are scanned: `touch /tmp/rta_quick_done`
 
 For each channel that exited silently in Pass 1:
 ```bash
-venv/bin/python scripts/rta_listen.py --channel N --until-confident --append-to /tmp/rta_batch_retry.jsonl
+venv/bin/python scripts/rta_listen.py --channel N --until-confident --cooldown 2 --retry-on-lock --append-to /tmp/rta_batch_retry.jsonl
 ```
-No `--silence-timeout` this time — give them the full duration. If a channel STILL returns no data,
-skip it.
+No `--silence-timeout` this time — give them the full duration. Keep the `--cooldown 2` /
+`--retry-on-lock` spacing. If a channel STILL returns no data, skip it.
 
 When done (or if no channels needed retry): `touch /tmp/rta_retry_done`
 

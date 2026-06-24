@@ -61,6 +61,18 @@ MIN_DURATION_SECONDS = 5          # Always capture at least this long
 # Signal thresholds
 MIN_SIGNAL_THRESHOLD = 0.001  # LE float32 RTA value below this = no meaningful signal
 
+# Subscription maintenance.
+# X32 meter subscriptions established via /batchsubscribe expire after ~10s.
+# We /renew the alias well inside that window instead of re-/batchsubscribing
+# every 100ms — the rapid re-subscribe pile-up is what corrupts/locks /meters/4
+# (see docs/CORRECTIONS.md 2026-06-24). Renew is a lightweight keep-alive.
+RENEW_INTERVAL = 5.0   # seconds between /renew keep-alives (must be < ~10s expiry)
+
+# When a scan comes back with the corrupt-lock signature, the desk's meter feed
+# needs dead air to recover. Cool down this long with zero traffic before a
+# single clean rescan. Empirically ~15-20s clears it.
+LOCK_COOLDOWN = 18.0   # seconds of silence before a post-lock rescan
+
 
 def parse_rta_blob(data: bytes) -> Optional[List[float]]:
     """Parse RTA meter blob from X-32.
@@ -147,7 +159,12 @@ class RTAListener:
         return address_bytes + type_tag_bytes + arg_data
 
     def subscribe_rta(self, channel: int):
-        """Subscribe to RTA data for a specific channel."""
+        """Subscribe to RTA data for a specific channel.
+
+        Send exactly ONE /batchsubscribe per meter alias here, then keep the
+        stream alive with /renew (see renew_subscriptions). Re-/batchsubscribing
+        on a tight loop is what piles up and corrupts /meters/4.
+        """
         self.channel = channel
         # Enable RTA processing (mode=1) and set the active RTA source.
         # /-stat/rtasource is the live source the desk reads from; /-prefs/rta/source
@@ -155,10 +172,35 @@ class RTAListener:
         # Enum is 0-indexed: channel N (1-32) → value N-1.
         self.send_osc('/-prefs/rta/mode', 1)
         self.send_osc('/-stat/rtasource', channel - 1)
-        # Subscribe to RTA meters
+        # Subscribe to RTA meters (alias == address)
         self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
         # Also subscribe to channel meters for peak level
         self.send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)
+
+    def renew_subscriptions(self):
+        """Renew existing meter subscriptions (lightweight keep-alive).
+
+        /renew refreshes the 10s expiry on an already-established /batchsubscribe
+        alias without re-creating the subscription — the gentle alternative to
+        the old 100ms re-/batchsubscribe hammer.
+        """
+        self.send_osc('/renew', '/meters/4')
+        self.send_osc('/renew', '/meters/0')
+
+    def unsubscribe(self):
+        """Release meter subscriptions so they don't linger between scans.
+
+        Best-effort: the X32 also lets subs lapse on its own after ~10s of no
+        renew, but an explicit /unsubscribe frees the slot immediately so the
+        next channel scan starts from a clean feed.
+        """
+        if not self.sock:
+            return
+        try:
+            self.send_osc('/unsubscribe', '/meters/4')
+            self.send_osc('/unsubscribe', '/meters/0')
+        except OSError:
+            pass
 
     def _parse_channel_meter(self, data: bytes) -> Optional[float]:
         """Parse channel meter blob and return normalized level (0.0-1.0) for our channel.
@@ -296,7 +338,7 @@ class RTAListener:
         has_signal = False
         start_time = time.time()
         last_xremote = start_time
-        last_subscribe = start_time
+        last_renew = start_time
 
         print(f"Listening for RTA data...", file=sys.stderr)
         if until_confident:
@@ -313,14 +355,16 @@ class RTAListener:
                 self.send_osc('/xremote')
                 last_xremote = current_time
 
-            # Re-subscribe every 100ms. Also re-assert the RTA source — if anyone
-            # touches the RTA picker on the desk, /-stat/rtasource jumps and our
-            # /meters/4 stream silently switches to whatever they selected.
-            if current_time - last_subscribe > 0.1:
+            # Keep the subscription alive with /renew (every ~5s, well inside the
+            # ~10s expiry) instead of re-/batchsubscribing every 100ms. The old
+            # hammer was the source of the /meters/4 corruption/lock, NOT a
+            # protection (docs/CORRECTIONS.md 2026-06-24). Re-assert the RTA
+            # source on the same gentle cadence so a stray tap on the desk's RTA
+            # picker is corrected without flooding the meter feed.
+            if current_time - last_renew > RENEW_INTERVAL:
                 self.send_osc('/-stat/rtasource', self.channel - 1)
-                self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
-                self.send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)
-                last_subscribe = current_time
+                self.renew_subscriptions()
+                last_renew = current_time
 
             # Receive data (RTA and/or meter)
             rta_data, meter_level = self.receive_data()
@@ -383,6 +427,52 @@ class RTAListener:
             return -100.0
         return round(20.0 * math.log10(value / reference), 1)
 
+    def _detect_lock(self, avg_bins: List[float]) -> bool:
+        """
+        Detect the self-inflicted /meters/4 corrupt-lock signature.
+
+        The lock is a structurally broken blob (NOT channel audio, NOT a second
+        X32 client) caused by meter-subscription pile-up — see
+        docs/CORRECTIONS.md 2026-06-24. Signatures verified live that session:
+          - ~40 of 82 bins pinned to *exactly* 0.0, wedged between strong bins
+            (a comb pattern a real spectrum never produces). Averaged over many
+            samples, a real noise floor is a small positive — only a pinned bin
+            averages to exactly 0.0.
+          - the 250Hz bin (index 30) always dead while energy surrounds it.
+          - a silent peak_meter (~0) sitting under a loud RTA blob (lock
+            magnitudes jump ~50x, into the ~0.5 range).
+        """
+        n = len(avg_bins)
+        if n < 32:
+            return False
+
+        STRONG = 0.05  # a "strong" bin in lock-magnitude terms (~0.5 range)
+
+        # Comb pattern: exact-zero bins sandwiched between strong bins.
+        zero_between_strong = 0
+        for i in range(1, n - 1):
+            if avg_bins[i] != 0.0:
+                continue
+            left_strong = any(avg_bins[j] > STRONG for j in range(max(0, i - 3), i))
+            right_strong = any(avg_bins[j] > STRONG for j in range(i + 1, min(n, i + 4)))
+            if left_strong and right_strong:
+                zero_between_strong += 1
+        if zero_between_strong >= 15:
+            return True
+
+        # 250Hz (bin 30) dead while flanked by strong energy.
+        bin30_dead = (avg_bins[30] == 0.0
+                      and (avg_bins[29] > STRONG or avg_bins[31] > STRONG))
+        if bin30_dead and zero_between_strong >= 5:
+            return True
+
+        # Silent channel under a loud RTA blob: meter says nothing is playing
+        # but the feed is pinned bright. (A real signal lifts peak_meter.)
+        if self.peak_meter < 0.005 and (max(avg_bins) if avg_bins else 0) > 0.1:
+            return True
+
+        return False
+
     def _validate_data(self, avg_bins: List[float]) -> tuple:
         """
         Validate RTA data quality.
@@ -393,11 +483,16 @@ class RTAListener:
         if len(self.samples) < 10:
             return False, "insufficient samples (need at least 10)"
 
+        # Corrupt-lock signature takes precedence: the remedy is a cooldown +
+        # rescan, not any of the spectral interpretations below.
+        if self._detect_lock(avg_bins):
+            return False, "RTA feed corrupt — cool down and rescan"
+
         max_raw = 1.0
         # Check if >80% of bins are within 5% of max
         near_max_count = sum(1 for v in avg_bins if v > max_raw * 0.95)
         if near_max_count > len(avg_bins) * 0.8:
-            return False, "all bins near maximum — likely corrupt data (check for second X32 client)"
+            return False, "all bins near maximum — likely corrupt data"
 
         # Check if all band peaks are identical (±2%)
         band_peaks = []
@@ -419,7 +514,7 @@ class RTAListener:
                 variance = sum((v - mean_signal) ** 2 for v in signal_bins) / len(signal_bins)
                 cv = math.sqrt(variance) / mean_signal
                 if cv < 0.15:
-                    return False, f"unnaturally flat spectrum (CV={cv:.2f}) — likely corrupt data (check for second X32 client)"
+                    return False, f"unnaturally flat spectrum (CV={cv:.2f}) — likely corrupt data"
 
         # Check meter/RTA mismatch
         has_rta_signal = max(avg_bins) >= MIN_SIGNAL_THRESHOLD
@@ -883,6 +978,21 @@ Output provides actionable spectral analysis at full frequency resolution:
         metavar="NAME",
         help="Channel name (avoids extra mixer connection to look it up)"
     )
+    parser.add_argument(
+        "--cooldown",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="Sleep this long before scanning. Spaces consecutive channel scans "
+             "so meter subscriptions don't pile up and lock /meters/4 (default: 0)"
+    )
+    parser.add_argument(
+        "--retry-on-lock",
+        action="store_true",
+        help=f"If the scan returns the corrupt-lock signature, cool down "
+             f"~{int(LOCK_COOLDOWN)}s with no traffic and do ONE clean rescan on "
+             f"the same connection instead of reporting bad data"
+    )
 
     args = parser.parse_args()
 
@@ -900,29 +1010,54 @@ Output provides actionable spectral analysis at full frequency resolution:
         channel_name = await get_channel_name(config, args.channel)
     print(f"Analyzing channel {args.channel}: {channel_name}", file=sys.stderr)
 
-    # Create listener and capture
+    # Backoff between consecutive scans: a short cooldown before opening the
+    # feed keeps back-to-back channel scans from piling subscriptions onto the
+    # desk (the /meters/4 lock trigger — docs/CORRECTIONS.md 2026-06-24).
+    if args.cooldown > 0:
+        print(f"Cooldown {args.cooldown:.1f}s before scan...", file=sys.stderr)
+        await asyncio.sleep(args.cooldown)
+
+    # Create listener and capture. One persistent socket is reused for the
+    # scan and any post-lock rescan.
     listener = RTAListener(config['mixer_ip'], config['mixer_port'])
 
-    try:
-        listener.connect()
-        listener.send_osc('/xremote')
+    async def run_scan() -> Dict:
         listener.subscribe_rta(args.channel)
-
-        # Let the mixer settle on the new RTA source before collecting
-        # Without this, early packets still carry the previous source's data
+        # Let the mixer settle on the new RTA source before collecting.
+        # Without this, early packets still carry the previous source's data.
         await asyncio.sleep(0.3)
-
-        result = await listener.listen(
+        r = await listener.listen(
             duration=args.duration,
             until_confident=args.until_confident,
             silence_timeout=args.silence_timeout
         )
+        listener.unsubscribe()
+        return r
+
+    try:
+        listener.connect()
+        listener.send_osc('/xremote')
+
+        result = await run_scan()
+
+        # On a detected lock, the only fix is dead air then one clean rescan —
+        # never pile on more subscriptions or blame external software.
+        if (args.retry_on_lock and not result.get('valid')
+                and result.get('validation_notes') == "RTA feed corrupt — cool down and rescan"):
+            print(f"Lock detected — cooling down {LOCK_COOLDOWN:.0f}s, then one clean rescan...",
+                  file=sys.stderr)
+            await asyncio.sleep(LOCK_COOLDOWN)
+            result = await run_scan()
+            if not result.get('valid'):
+                print("Still locked after cooldown — leave the feed alone and rescan later.",
+                      file=sys.stderr)
     except ConnectionError as e:
         print(f"Error: {e}", file=sys.stderr)
         print("Make sure the mixer is powered on and reachable.", file=sys.stderr)
         print(json.dumps({'success': False, 'error': 'connection_failed'}))
         sys.exit(1)
     finally:
+        listener.unsubscribe()
         listener.disconnect()
 
     # Add channel info to result
