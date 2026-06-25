@@ -45,8 +45,10 @@ calls** — never chain with `&&` or `;` (breaks permission matching).
    direct to main; other vocals `st=0` via Voices bus; drums via drums bus; bass/guitar/lead-vocal
    FX inserts on the right channels). **If anything mismatches, STOP and tell the engineer** before
    taking requests.
-5. **RTA health pre-flight** — see the dedicated section below. Establish whether RTA is trustworthy
-   *before* the engineer asks for an EQ change.
+5. **RTA** — assume healthy (it is; see the dedicated section). Do NOT run a pin-check at boot off a
+   quiet board — the check needs two channels actually producing signal, which often don't exist
+   pre-service. Run it only when an EQ tweak is requested and you have two active, spectrally-distinct
+   channels to compare. A quiet board ≠ broken RTA.
 6. **Present the loaded summary** in plain English and hand over:
    > "Board's loaded. 20 active channels — vocals: Tammy, Randy, Bart, Kat, Jen; drums: kick/snare/
    > toms/hats/ride; instruments: bass, piano, keys, e-guitar. Routing checks out, gain targets
@@ -97,24 +99,56 @@ Gather per-channel, on demand, when a tweak touches EQ:
 venv/bin/python scripts/rta_listen.py --channel <N> --update-session
 ```
 
-**RTA health pre-flight / trust gate (the hard lesson):** a second X32 controller (X32-Edit, the
-X32 mobile/desktop app, another script) **pins the RTA tap** — it holds `/-stat/rtasource` on
-whatever *it* is showing, so every channel you scan returns the *same frozen spectrum*. The peak
-meter still reads per-channel, which masks it. Symptoms: two spectrally-different sources (e.g. a
-bass and a vocal) come back with identical dominant peaks (same Hz, same prominence to 0.1 dB),
-unchanging across runs.
+**RTA WORKS. Default assumption: RTA is healthy.** Verified end-to-end on 2026-06-24 (bass ch31
+returned `valid:true`, real low-frequency spectrum; piano returned distinct presence/brilliance
+content; the tap demonstrably follows `/-stat/rtasource`). Earlier sessions repeatedly declared RTA
+"pinned/blocked" and skipped all EQ — **those were almost all FALSE alarms from a broken sanity
+check.** Do not inherit that pessimism. Trust the script's own per-channel `valid` field: `valid:true`
+with a source-appropriate shape = good data, proceed.
 
-**Before trusting RTA, sanity-check it:** scan two active channels you *expect* to differ (a
-low source like bass/kick vs. a bright one like a vocal/cymbal). If their spectra are
-indistinguishable, RTA is pinned — **STOP and tell the engineer:**
-> "RTA's coming back pinned — looks like another X32 controller (X32-Edit, the app, or another
-> script) has the desk. Close it and I'll re-scan."
+**The real failure mode is SELF-INFLICTED, not an external client (proven 2026-06-24).** The old
+docs blamed "a second X32 controller pinning the tap." That is a **myth** — it was investigated live
+with no other software running and nobody at the desk, and the tap still locked. The actual cause:
+**hammering the desk with rapid, piled-up `/meters/4` subscriptions.** `rta_listen` opens a fresh UDP
+socket per run and re-subscribes every 100 ms; do enough of that in quick succession (e.g. scanning
+many channels back-to-back) and the X32's meter feed corrupts and **locks onto a fixed spectrum that
+no source pointer can move.** Confirmed signatures of the locked/corrupt state:
+- A **silent channel** (`peak_meter` ≈ 0) returns a **loud** spectrum — impossible if it were real.
+- Two spectrally-different channels return **identical absolute spectra** regardless of which you select.
+- The blob is **structurally broken**: many bins pinned to exactly `0.0000` wedged between strong
+  ones, a fixed peak template that doesn't change with the source.
+- Setting `/-stat/rtasource`, `/-prefs/rta/source`, `/-stat/selidx`, clearing solo, or toggling
+  `/-prefs/rta/mode` does **nothing**. (If you're reaching for these, you're already locked.)
 
-Do NOT invent other explanations (it is not the solo bus, and it is not silence if musicians are
-playing). At startup, mention closing other X32 clients as a precaution.
+**The FIRST scan in a fresh session is the trustworthy one.** RTA works correctly when you haven't
+been pounding it (startup: bass→low, piano→bright, hats→silent, all correct). It degrades under load.
 
-> Note: running RTA moves the desk's RTA-source picker. Harmless (display only), but mention it if
-> the engineer cares, and offer to set it back.
+**Detecting the lock (compare ABSOLUTE magnitudes, never normalized peak Hz):** pick a low source
+(bass/kick) and a bright one (vocal/cymbal/piano-high), both with `peak_meter` off the floor
+(> ~0.02), and compare `bands[*].peak` raw values. Healthy = the bright channel has real
+`presence`/`brilliance` the low one lacks. Locked = identical spectra, or a silent channel reading
+loud. (The OLD check compared `peaks[].freq_hz`, normalized per channel — a silent channel's
+noise-floor peaks coincidentally match anything, which is what produced years of false "pinned"
+alarms. Don't use it.)
+
+**The remedy is a COOLDOWN, not closing phantom software:**
+> Go quiet. Stop all scanning for ~15–20 s so the stale meter subscriptions expire, then do **one**
+> clean scan. Don't pile on more subscriptions trying to "force" it — that's what locked it.
+
+Do **not** tell the engineer to close X32-Edit unless you have independent evidence it's actually
+open. The default explanation is your own scan load.
+
+**Never diagnose a lock from a silent channel alone.** If your comparator reads near zero, the band
+just isn't playing — a quiet board is not a broken RTA.
+
+**Scan hygiene (avoid the lock in the first place):** scan sparingly — one channel at a time, only
+when a tweak needs it, and don't loop over many channels rapidly. If you must scan several, space
+them out. (Code follow-up tracked in `docs/CORRECTIONS.md` 2026-06-24: `rta_listen.py` should reuse
+one socket / use `/renew` instead of re-`/batchsubscribe` at 100 ms, and the auto-awesome
+`rta-gather` worker's all-channels loop is the prime trigger.)
+
+> Note: running RTA moves the desk's RTA-source picker and selected channel. Harmless (display
+> only), but mention it if the engineer cares, and offer to set it back.
 
 ---
 
