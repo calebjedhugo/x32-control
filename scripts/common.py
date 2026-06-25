@@ -406,8 +406,17 @@ def parse_meter_blob(data: bytes) -> Dict[str, float]:
     """Parse meter blob to get channel peak values.
 
     X32 meter blob format: 4-byte LE int32 count (70), then 70 LE float32 values.
-    Layout: 2 values per channel (input level + gate indicator), 32 channels = 64,
-    plus 6 aux values. Channel N meter is at index (N-1)*2.
+    Layout: ONE value per channel — channel N meter is at index N-1 (indices
+    0-31 = ch1-32; indices 32+ are aux/fx/bus/main meters, which is why an
+    announcement routed to the mains also lights some high indices).
+
+    NOTE (verified 2026-06-14, live): the earlier "2 values per channel
+    (level + gate), index (N-1)*2" interpretation was WRONG. With a known live
+    source on ch10 (someone talking), the speech tracked index 9 — not index 18
+    — and index 18 was dead. The 2-per stride read every channel's level from
+    the wrong slot (except ch1 at idx0, identical either way), so some channels
+    showed a flat 0.0 despite carrying signal. The bus parser
+    (parse_bus_meter_blob) already used 1-per; the channel parser was the outlier.
     """
     result = {}
     try:
@@ -417,9 +426,9 @@ def parse_meter_blob(data: bytes) -> Dict[str, float]:
         num_floats = min(count, (len(data) - 4) // 4)
         values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
 
-        # Channels 1-32: meter at index (N-1)*2
+        # Channels 1-32: one value per channel at index N-1
         for i in range(32):
-            idx = i * 2
+            idx = i
             if idx < num_floats:
                 result[f'ch{i + 1:02d}'] = values[idx]
     except Exception:

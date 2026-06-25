@@ -269,23 +269,21 @@ python scripts/query.py --fx 1
 
 ## Known Issues
 
-- **`/meters/0` omits some channels entirely (OPEN, found 2026-06-14)**: Certain channels read a
-  flat 0.0 channel meter while they carry real signal. Confirmed on **ch19 "Tammy Guitar"** and
-  **ch20 "Acust Guitar"** (engineer confirmed strong signal; RTA tapped a valid guitar spectrum on
-  ch19 in the same window the meter showed 0.0). **It is NOT a parser index bug.** Raw `/meters/0`
-  blob dump (70 floats) with signal present: ch1→idx0=0.216 ✓, ch32→idx62=0.147 ✓, but ch19's
-  position is 0.0 under *both* the current 2-per-channel mapping (idx36) *and* a 1-per-channel
-  mapping (idx18) — the signal is simply absent from the blob, not shifted. Hot indices were
-  0,2,3,12,16,17,24-31,40,42,43,46,48,52-67. Likely cause: `/meters/0` taps a local-input/pre-source
-  stage, and ch19/ch20 are fed from a routing source that bypasses that tap (ch19 source=10, ch20
-  source=16, ch32 source=22 — source number alone doesn't cleanly split working vs broken, so the
-  routing behind those local inputs is the thing to check). **Impact**: gain-staging/active-channel
-  detection silently drops these channels; metering workers skip them. **Next step (needs board +
-  controlled test, do NOT guess-fix the parser — ch1/ch32 read correctly today)**: solo one channel
-  at a time and watch which blob index lights, to map index→channel for the mid-range; OR switch
-  active-channel detection to a signal source that reflects post-source processing (RTA presence, or
-  a different meter bank such as `/meters/1`). Until fixed: if a channel reads 0.0 but RTA/console
-  show signal, trust the console.
+- **`/meters/0` channel meters read from the wrong slot (FIXED 2026-06-14)**: Symptom — channels
+  read a flat 0.0 meter while carrying real signal (seen on ch9/ch19/ch20), and "working" channels
+  were silently misattributed. **Root cause**: `parse_meter_blob()` assumed **2 values per channel**
+  (`idx = (N-1)*2`), but the blob is **1 value per channel** (`idx = N-1`). Every channel except ch1
+  (idx0, identical either way) was read from the wrong float — a channel "worked" only when its
+  wrong slot happened to carry signal (often a main/aux meter in the idx≥32 tail). **Fix**: changed
+  the stride to `idx = i` in `common.py` (one line). **Decisive test**: with a known live source on
+  ch10 only (someone talking on the announcement mic), the speech tracked **idx9** (= ch10 under
+  1-per) and idx18 (the 2-per slot) was dead; after the fix a fresh capture reported ch10 = 0.083
+  and active (was 0.0003/inactive before). **False trail worth remembering**: an earlier pass
+  "confirmed" 2-per because ch05→idx8 and ch30→idx58 looked right — but that was circular (it trusted
+  the 2-per parser's own channel labels; idx8 is really ch9, idx58 is a tail meter). Isolating ONE
+  known channel broke the circularity. **Implication**: all historical gain-staging channel levels
+  (except ch1) were mis-attributed — treat pre-2026-06-14 captures' per-channel peaks with suspicion.
+  The bus parser (`parse_bus_meter_blob`, `/meters/2`) already used 1-per and was unaffected.
 
 - **OSC response misattribution (FIXED Mar 2026)**: The upstream `behringer_mixer` library stored all responses in a single global buffer, discarding the response address. With ~2000 queries per capture, responses arrived out of order and got attributed to the wrong query — 46% individual failure rate. Retries masked it but couldn't fix it: a "successful" retry could read a stale response from a different address. **Fix**: Vendored the library to `lib/behringer_mixer/` and added per-address response matching in `mixer_base.py`. Each `query()` now waits for its specific address via `asyncio.Event`. Retries reduced from 8-10 to 3 (only covering UDP packet loss). Warmup reduced from 3 queries to 1.
 
@@ -296,6 +294,15 @@ python scripts/query.py --fx 1
   - **Diff suspicious flags**: `diff_sessions.py` marks changes TO/FROM default values with `[?]` prefix.
 
 ## Changelog
+
+- **Jun 14, 2026 (at the board, later)**: **Fixed `/meters/0` channel meter parsing** —
+  `parse_meter_blob()` used a 2-per-channel stride `(N-1)*2`; the blob is 1-per-channel (`N-1`).
+  Diagnosed with a known live source on ch10 (speech tracked idx9, not idx18). Every channel but ch1
+  was read from the wrong slot, so some read 0 despite signal and others were silently misattributed.
+  One-line fix in common.py; validated by re-capture (ch10 0.0003→0.083, now active). Historical
+  per-channel gain-staging (except ch1) is therefore unreliable. Also corrected a wrong intermediate
+  conclusion from earlier the same day that had "exonerated" the parser (it trusted the bad parser's
+  own channel labels — circular).
 
 - **Jun 14, 2026 (at the board)**: Verified the Jun-10 safeguards live (pre-write verification refuses fabricated `old_value` against a live read; confirmed across matching/gross-mismatch/subtle-mismatch cases). Restored FX7 amp sim (par07→0.725, par08→0.4) — note this is live-only, the degraded values persist in the saved scene. `session_capture.py` now **always** writes `metadata.query_failures` (even `count: 0`) so consumers can reliably gate trust. Found two open issues: (1) `/meters/0` drops some channels entirely (see Known Issues — ch19/ch20); (2) the planned `session_capture.py` null refactor is downgraded — with the always-present failure count (0 is typical post-Mar-fix) plus pre-write verification, the value no longer justifies the analyze/extract/diff cascade risk. Revisit only if failures become common again.
 

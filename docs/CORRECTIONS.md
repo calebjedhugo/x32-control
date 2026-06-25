@@ -3,12 +3,14 @@
 ## TODO
 
 ### Open
-1. **`/meters/0` drops some channels entirely (found 2026-06-14, needs board + controlled test).**
-   ch19 "Tammy Guitar" and ch20 "Acust Guitar" read flat 0.0 channel meters while carrying real
-   signal (RTA-confirmed, engineer-confirmed). Not a parser bug — signal is absent from the blob
-   under both 2-per-ch and 1-per-ch layouts; likely a tap-point/routing issue. Full detail +
-   next steps in TECHNICAL.md → Known Issues. Until fixed: if a channel reads 0.0 but RTA/console
-   show signal, trust the console; don't gain-stage that channel from the meter.
+1. **De-esser for Brian (ch9, speaking/headset) — deferred to a future session (2026-06-14).**
+   Diagnosis done: sibilance energy peaks at **10–11 kHz** (his voice is very top-heavy, −23 dB
+   slope). Engineer already (a) eased the heavy 5:1 comp and (b) moved his ~8 kHz EQ cut up to
+   ~10 kHz — helped but not enough. A real de-esser is wanted. Blocker: **all 8 FX slots are in
+   use**, and only FX1–4 can be channel inserts (bass Ultimo / CamVerb / AudVerb / Tammy exciter) —
+   no free home for a de-esser without sacrificing one. No-slot stock alternative to try first:
+   the channel **compressor sidechain key filter** keyed to ~6–9 kHz (ducks on the "s"; pumps the
+   whole channel slightly). Decide between that vs. freeing an FX slot next session.
 
 ### Downgraded (was item 3 — do NOT just execute it)
 - **session_capture.py plausible defaults → null refactor: shelved 2026-06-14.** Rationale: failures
@@ -24,6 +26,13 @@
 - ✅ Live-verified pre-write verification (matching old_value applies; gross mismatch caught by
   static validation; subtle mismatch caught by the live pre-write read — the exact Sunday scenario).
 - ✅ session_capture.py now always writes `metadata.query_failures` (even count 0).
+- ✅ **Fixed the `/meters/0` channel-dropout bug** (ch9/19/20 reading 0 with signal). Root cause: the
+  channel meter parser used a 2-values-per-channel stride; the blob is 1-per-channel. Confirmed live
+  with the announcement on ch10 (speech tracked idx9, not the 2-per idx18), fixed the stride in
+  common.py, re-captured → ch10 reads correctly. **All historical per-channel gain-staging levels
+  except ch1 were mis-attributed** — don't trust pre-2026-06-14 capture channel peaks. Detail in
+  TECHNICAL.md. (Earlier "parser is fine, it's a tap-point issue" conclusion was wrong — it had
+  trusted the bad parser's own labels; isolating one known channel exposed it.)
 
 *Wiped 2026-03-15: All prior entries (2026-02-25 through 2026-03-15) were recorded with a buggy capture script that produced corrupted EQ/parameter readbacks. Patterns derived from that data are unreliable. Fresh start with fixed capture script.*
 
