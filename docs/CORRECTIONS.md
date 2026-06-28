@@ -1,5 +1,42 @@
 # Session Corrections Log
 
+## 2026-06-28 — RTA "lock" was a wrong-bank parse bug. FIXED. (supersedes all 2026-06-24 RTA notes)
+
+**Root cause, proven by raw-blob inspection on the live desk:** `scripts/rta_listen.py` was reading
+the **wrong meter bank in the wrong format**. It subscribed to `/meters/4` and parsed it as 82 ×
+float32. `/meters/4` is a **channel/bus LEVEL-METER bank, not a spectrum** — so the "frozen corrupt
+template" (peaks pinned at bins 50/74/75 = ~1350 Hz + a duplicated 10.2/11.1 kHz pair, with b74==b75
+exactly) was just always-hot meter slots and a stereo pair, not audio. That is the entire "lock."
+
+**Therefore the whole 2026-06-24 entry below is WRONG and is retained only as history:** there was no
+corrupt-lock, no subscription-pile-up corruption, no "second X32 client," and the cooldown/`--retry-
+on-lock` remedy never did anything. Cooldowns appeared to "not clear" the lock because there was
+nothing to clear — the parser produced the same phantom every time by construction.
+
+**The real RTA** is `/meters/15`: int32 count (=50 words), then **100 signed int16** where
+`value ÷ 256 = dB`. Parsed that way (→ linear amplitude) it yields a clean, believable spectrum. Bank
+probe confirmed `/meters/0,4,13` are all level-meter banks (shared `[0.072, 0.211, …]` channel
+prefix); only `/meters/15` is the 100-band analyzer.
+
+**Fix applied to `scripts/rta_listen.py` (unit-tested offline against a captured `/meters/15` blob;
+NOT yet live-verified end-to-end because that needs board writes):**
+- `parse_rta_blob` → 100 × int16 (dB÷256) → linear; `NUM_RTA_BINS` 82→100; `bin_to_freq` uses N−1 so
+  bin 99 = 20 kHz; `FREQUENCY_BANDS` and the hardcoded analysis bin ranges (mud/resonance/tilt/
+  transient) all recomputed for 100 bins.
+- subscribe/renew/parse use `/meters/15`; `_detect_lock` neutralized to a no-op; `_validate_data`'s
+  lock branch replaced with an **honest source-select guard** (silent channel meter + live RTA →
+  `valid:false`, "RTA source-select is not tracking this channel").
+
+**Still OPEN — verify next session with signal (needs a live board write):** even on `/meters/15`,
+the tap did not follow `/-stat/rtasource` in passive testing (two reads of the same channel differed
+MORE than two different channels). The script now sets **both** `/-stat/selidx` and `/-stat/rtasource`
+as a best guess, but **which one actually steers `/meters/15` is unconfirmed.** Confirm with a
+bright-vs-low both-playing scan (see the one-time block in the x32-board skill). If it doesn't switch,
+the remaining fix is the source-select address — block per-channel EQ until then.
+
+Code follow-up: `.claude/commands/x32-auto-awesome/rta-gather.md` and any docs still describing the
+"lock"/cooldown can be simplified; they're chasing a bug that no longer exists.
+
 ## TODO
 
 ### Open

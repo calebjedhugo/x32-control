@@ -17,21 +17,28 @@ once; then you stay in an interactive loop handling ad-hoc requests with full co
 guardrails — until the user is done. This is a single persistent agent (no worker dispatch); the
 context is *supposed* to be resident — that's the whole point.
 
-## ⚠️ ONE-TIME: verify the RTA lock fix (added 2026-06-24 — remove once confirmed)
+## ⚠️ ONE-TIME: confirm per-channel RTA source-switching (added 2026-06-28 — remove once confirmed)
 
-The RTA `/meters/4` corrupt-lock fix (renew-not-hammer + cooldown + lock detection in
-`scripts/rta_listen.py`) was merged but **never verified on a live board with signal**. Next time
-you're at the desk with musicians playing, before the engineer gets deep into requests:
+The RTA parser was rewritten 2026-06-28 to read the **correct** bank/format (`/meters/15`, 100 ×
+int16 dB) — the old code read `/meters/4` level-meters as float32, which is what produced the bogus
+"corrupt lock" template. The spectrum is now real. **One thing still needs a live confirm:** that the
+analyzer actually follows the channel you pick. The script now sets BOTH `/-stat/selidx` and
+`/-stat/rtasource`, but which one truly steers `/meters/15` wasn't confirmable off a live board.
 
-1. With a low source (bass) and a bright source (vocal/piano-high) both playing, scan each
-   repeatedly back-to-back and confirm their **absolute** band spectra (`bands[*].peak`) stay
-   distinct — the lock no longer reproduces under scan load.
-2. Scan a silent channel and confirm it reads near-zero (not a loud "locked" blob).
-3. If a scan ever returns `"RTA feed corrupt — cool down and rescan"`, that's the new detector
-   working — `--retry-on-lock` should auto-recover after ~18s.
+Next time you have musicians playing, before deep requests:
 
-Tell the engineer the result in plain English ("RTA's holding up under repeated scans"), then delete
-this block from the skill.
+1. With a **bass** (low) and a **bright** source (vocal/cymbal/piano-high) both playing, scan each:
+   `venv/bin/python scripts/rta_listen.py --channel <N> --update-session`. Bass should read
+   low-frequency-dominant; the bright one should have real `presence`/`brilliance`. **Different
+   shapes = source-switching works.** Identical shapes = the tap isn't following the channel (it's
+   stuck on the main mix) — say so and don't trust per-channel EQ until it's sorted.
+2. Scan a channel you KNOW is silent. The script should return `valid:false` with
+   "channel meter silent but RTA shows signal …" — that guard means it correctly noticed the tap
+   isn't on that (silent) channel.
+
+Tell the engineer the result in plain English ("per-channel RTA is switching correctly"), then delete
+this block. If switching is broken, the fix is the source-select address — leave a note in
+`docs/CORRECTIONS.md`.
 
 ---
 
@@ -63,10 +70,8 @@ calls** — never chain with `&&` or `;` (breaks permission matching).
    direct to main; other vocals `st=0` via Voices bus; drums via drums bus; bass/guitar/lead-vocal
    FX inserts on the right channels). **If anything mismatches, STOP and tell the engineer** before
    taking requests.
-5. **RTA** — assume healthy (it is; see the dedicated section). Do NOT run a pin-check at boot off a
-   quiet board — the check needs two channels actually producing signal, which often don't exist
-   pre-service. Run it only when an EQ tweak is requested and you have two active, spectrally-distinct
-   channels to compare. A quiet board ≠ broken RTA.
+5. **RTA** — gathered per-EQ-tweak, not at boot (see the dedicated section). Don't scan a quiet
+   pre-service board — RTA needs the source actually playing. A quiet board ≠ broken RTA.
 6. **Present the loaded summary** in plain English and hand over:
    > "Board's loaded. 20 active channels — vocals: Tammy, Randy, Bart, Kat, Jen; drums: kick/snare/
    > toms/hats/ride; instruments: bass, piano, keys, e-guitar. Routing checks out, gain targets
@@ -117,56 +122,35 @@ Gather per-channel, on demand, when a tweak touches EQ:
 venv/bin/python scripts/rta_listen.py --channel <N> --update-session
 ```
 
-**RTA WORKS. Default assumption: RTA is healthy.** Verified end-to-end on 2026-06-24 (bass ch31
-returned `valid:true`, real low-frequency spectrum; piano returned distinct presence/brilliance
-content; the tap demonstrably follows `/-stat/rtasource`). Earlier sessions repeatedly declared RTA
-"pinned/blocked" and skipped all EQ — **those were almost all FALSE alarms from a broken sanity
-check.** Do not inherit that pessimism. Trust the script's own per-channel `valid` field: `valid:true`
-with a source-appropriate shape = good data, proceed.
+**There is no "RTA lock." That whole saga was a parse bug (root-caused 2026-06-28).** The old
+`rta_listen.py` read the wrong meter bank in the wrong format — `/meters/4` (a channel/bus
+**level-meter** bank) parsed as 82 × float32. That produced a fixed phantom "spectrum" (always-hot
+meter slots at ~1350 Hz + a duplicated 10.2/11.1 kHz pair) that every past session mistook for a
+"corrupt lock," then blamed on a "second X32 client" and tried to fix with cooldowns. None of that
+was real. The script now reads the **actual 100-band RTA on `/meters/15`** (100 × int16, value÷256 =
+dB → linear), which gives a true spectrum. Cooldown / `--retry-on-lock` / "second client" guidance is
+**dead — ignore it.**
 
-**The real failure mode is SELF-INFLICTED, not an external client (proven 2026-06-24).** The old
-docs blamed "a second X32 controller pinning the tap." That is a **myth** — it was investigated live
-with no other software running and nobody at the desk, and the tap still locked. The actual cause:
-**hammering the desk with rapid, piled-up `/meters/4` subscriptions.** `rta_listen` opens a fresh UDP
-socket per run and re-subscribes every 100 ms; do enough of that in quick succession (e.g. scanning
-many channels back-to-back) and the X32's meter feed corrupts and **locks onto a fixed spectrum that
-no source pointer can move.** Confirmed signatures of the locked/corrupt state:
-- A **silent channel** (`peak_meter` ≈ 0) returns a **loud** spectrum — impossible if it were real.
-- Two spectrally-different channels return **identical absolute spectra** regardless of which you select.
-- The blob is **structurally broken**: many bins pinned to exactly `0.0000` wedged between strong
-  ones, a fixed peak template that doesn't change with the source.
-- Setting `/-stat/rtasource`, `/-prefs/rta/source`, `/-stat/selidx`, clearing solo, or toggling
-  `/-prefs/rta/mode` does **nothing**. (If you're reaching for these, you're already locked.)
+**Trust the script's `valid` field, and read the `validation_notes`.** `valid:true` with a
+source-appropriate shape = good data, proceed. The one real failure it now flags honestly:
+> `valid:false` — "channel meter silent but RTA shows signal — RTA source-select is not tracking this
+> channel." This means the analyzer is tapping something other than the channel you asked for (or the
+> channel just isn't playing). Either way: **do not** base EQ on it. Get the channel playing and
+> rescan; if a clearly-playing channel still trips this, source-switching is broken (see the one-time
+> confirm block above) and EQ is blocked until it's fixed.
 
-**The FIRST scan in a fresh session is the trustworthy one.** RTA works correctly when you haven't
-been pounding it (startup: bass→low, piano→bright, hats→silent, all correct). It degrades under load.
+**Sanity-check per-channel switching when it matters** (a bright vs a low source, both playing):
+their spectra should differ — the bright one has real `presence`/`brilliance` the bass lacks. If two
+genuinely different, both-playing sources come back with the **same** shape, the tap isn't following
+the channel — stop and say so. (Compare absolute `bands[*].peak`, never normalized peak-frequency
+labels — a silent channel's noise-floor peaks coincidentally match anything.)
 
-**Detecting the lock (compare ABSOLUTE magnitudes, never normalized peak Hz):** pick a low source
-(bass/kick) and a bright one (vocal/cymbal/piano-high), both with `peak_meter` off the floor
-(> ~0.02), and compare `bands[*].peak` raw values. Healthy = the bright channel has real
-`presence`/`brilliance` the low one lacks. Locked = identical spectra, or a silent channel reading
-loud. (The OLD check compared `peaks[].freq_hz`, normalized per channel — a silent channel's
-noise-floor peaks coincidentally match anything, which is what produced years of false "pinned"
-alarms. Don't use it.)
+**A quiet board is not a broken RTA.** Don't diagnose anything off a silent channel; it just isn't
+playing. Scan sparingly — one channel at a time, only when a tweak needs it.
 
-**The remedy is a COOLDOWN, not closing phantom software:**
-> Go quiet. Stop all scanning for ~15–20 s so the stale meter subscriptions expire, then do **one**
-> clean scan. Don't pile on more subscriptions trying to "force" it — that's what locked it.
-
-Do **not** tell the engineer to close X32-Edit unless you have independent evidence it's actually
-open. The default explanation is your own scan load.
-
-**Never diagnose a lock from a silent channel alone.** If your comparator reads near zero, the band
-just isn't playing — a quiet board is not a broken RTA.
-
-**Scan hygiene (avoid the lock in the first place):** scan sparingly — one channel at a time, only
-when a tweak needs it, and don't loop over many channels rapidly. If you must scan several, space
-them out. (Code follow-up tracked in `docs/CORRECTIONS.md` 2026-06-24: `rta_listen.py` should reuse
-one socket / use `/renew` instead of re-`/batchsubscribe` at 100 ms, and the auto-awesome
-`rta-gather` worker's all-channels loop is the prime trigger.)
-
-> Note: running RTA moves the desk's RTA-source picker and selected channel. Harmless (display
-> only), but mention it if the engineer cares, and offer to set it back.
+> Note: running RTA moves the desk's RTA-source picker AND the selected channel (`/-stat/selidx`).
+> Display-only, but it will jump the engineer's selected-channel view — mention it if they care, and
+> offer to set it back.
 
 ---
 

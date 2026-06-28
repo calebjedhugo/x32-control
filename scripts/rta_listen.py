@@ -33,24 +33,29 @@ sys.path.insert(0, str(Path(__file__).parent))
 from common import load_config, get_mixer, get_state_value
 
 # X-32 meter index for RTA
-METER_RTA = 4  # 82 frequency bins (20Hz - 20kHz), LE float32 format
+METER_RTA = 15  # 100 frequency bins (20Hz - 20kHz), packed int16 (dB x 256)
 
-# Number of RTA bins the X32 returns via /meters/4
-NUM_RTA_BINS = 82
+# Number of RTA bins the X32 returns via /meters/15.
+# IMPORTANT: the 100-band analyzer is /meters/15, packed as 100 signed int16
+# (value / 256 = dB). /meters/4 is a channel/bus LEVEL-METER bank, NOT a
+# spectrum — parsing it as a spectrum produced the phantom "fixed peak / lock"
+# template that earlier sessions mistook for a corrupt feed (see
+# docs/CORRECTIONS.md). There is no lock; that was a wrong-bank parse bug.
+NUM_RTA_BINS = 100
 
 # Frequency band definitions (bin index ranges)
-# X-32 RTA has 82 bins spanning ~20Hz to 20kHz (logarithmic spacing)
-# Bin n ≈ 20 * 10^(3n/82) Hz
+# X-32 RTA has 100 bins spanning ~20Hz to 20kHz (logarithmic spacing)
+# Bin n ≈ 20 * 10^(3n/99) Hz  (n = 0..99)
 FREQUENCY_BANDS = {
-    'sub':        {'range': '20-60Hz',   'bins': (0, 13),   'desc': 'Rumble, kick fundamental'},
-    'bass':       {'range': '60-120Hz',  'bins': (13, 21),  'desc': 'Punch, bass fundamental'},
-    'low':        {'range': '120-250Hz', 'bins': (21, 30),  'desc': 'Warmth, fullness'},
-    'low_mid':    {'range': '250-500Hz', 'bins': (30, 38),  'desc': 'Mud, boxiness'},
-    'mid':        {'range': '500-1kHz',  'bins': (38, 47),  'desc': 'Honk, nasal, body'},
-    'upper_mid':  {'range': '1-2kHz',    'bins': (47, 55),  'desc': 'Presence, attack'},
-    'presence':   {'range': '2-4kHz',    'bins': (55, 63),  'desc': 'Bite, clarity, intelligibility'},
-    'brilliance': {'range': '4-8kHz',    'bins': (63, 71),  'desc': 'Air, sibilance, shimmer'},
-    'high':       {'range': '8-20kHz',   'bins': (71, 82),  'desc': 'Sparkle, extreme air'},
+    'sub':        {'range': '20-60Hz',   'bins': (0, 16),    'desc': 'Rumble, kick fundamental'},
+    'bass':       {'range': '60-120Hz',  'bins': (16, 26),   'desc': 'Punch, bass fundamental'},
+    'low':        {'range': '120-250Hz', 'bins': (26, 36),   'desc': 'Warmth, fullness'},
+    'low_mid':    {'range': '250-500Hz', 'bins': (36, 46),   'desc': 'Mud, boxiness'},
+    'mid':        {'range': '500-1kHz',  'bins': (46, 56),   'desc': 'Honk, nasal, body'},
+    'upper_mid':  {'range': '1-2kHz',    'bins': (56, 66),   'desc': 'Presence, attack'},
+    'presence':   {'range': '2-4kHz',    'bins': (66, 76),   'desc': 'Bite, clarity, intelligibility'},
+    'brilliance': {'range': '4-8kHz',    'bins': (76, 86),   'desc': 'Air, sibilance, shimmer'},
+    'high':       {'range': '8-20kHz',   'bins': (86, 100),  'desc': 'Sparkle, extreme air'},
 }
 
 # Variance thresholds for --until-confident mode
@@ -59,7 +64,7 @@ MIN_SAMPLES_FOR_CONFIDENCE = 50   # Need at least this many samples
 MIN_DURATION_SECONDS = 5          # Always capture at least this long
 
 # Signal thresholds
-MIN_SIGNAL_THRESHOLD = 0.001  # LE float32 RTA value below this = no meaningful signal
+MIN_SIGNAL_THRESHOLD = 0.001  # linear amplitude (~-60dB) below this = no meaningful signal
 
 # Subscription maintenance.
 # X32 meter subscriptions established via /batchsubscribe expire after ~10s.
@@ -75,20 +80,27 @@ LOCK_COOLDOWN = 18.0   # seconds of silence before a post-lock rescan
 
 
 def parse_rta_blob(data: bytes) -> Optional[List[float]]:
-    """Parse RTA meter blob from X-32.
+    """Parse the 100-band RTA meter blob from X-32 (/meters/15).
 
-    Format: 4-byte LE int32 count, then count LE float32 values.
-    Returns list of float values (0.0-1.0 linear amplitude per frequency bin).
+    Wire format: 4-byte LE int32 count (number of 32-bit words, =50), then the
+    payload as 100 signed LE int16 values where (value / 256.0) = dB. We return
+    linear amplitude per bin (10**(dB/20)), keeping the downstream analysis on
+    the same 0.0-1.0 scale it has always used.
+
+    NB: this is NOT float32. /meters/15 packs two int16 dB readings per word;
+    reading it as float32 (the old /meters/4 path) yields garbage.
     """
     try:
         if len(data) < 4:
             return None
-        count = struct.unpack('<i', data[:4])[0]
-        num_floats = min(count, (len(data) - 4) // 4)
-        if num_floats < 10:
+        # Payload is everything after the int32 count, parsed as int16.
+        payload = data[4:]
+        num_shorts = len(payload) // 2
+        if num_shorts < 50:
             return None
-        values = struct.unpack(f'<{num_floats}f', data[4:4 + num_floats * 4])
-        return list(values)
+        shorts = struct.unpack(f'<{num_shorts}h', payload[:num_shorts * 2])
+        # value/256 = dB (<= 0 dBFS); convert to linear amplitude.
+        return [10.0 ** ((s / 256.0) / 20.0) for s in shorts]
     except Exception:
         return None
 
@@ -162,19 +174,23 @@ class RTAListener:
         """Subscribe to RTA data for a specific channel.
 
         Send exactly ONE /batchsubscribe per meter alias here, then keep the
-        stream alive with /renew (see renew_subscriptions). Re-/batchsubscribing
-        on a tight loop is what piles up and corrupts /meters/4.
+        stream alive with /renew (see renew_subscriptions).
         """
         self.channel = channel
-        # Enable RTA processing (mode=1) and set the active RTA source.
-        # /-stat/rtasource is the live source the desk reads from; /-prefs/rta/source
-        # is just a remembered UI preference and does NOT move the actual RTA tap.
-        # Enum is 0-indexed: channel N (1-32) → value N-1.
+        # Enable RTA processing, then point the 100-band analyzer (/meters/15)
+        # at this channel. The analyzer follows the SELECTED channel, so we set
+        # /-stat/selidx as well as /-stat/rtasource — empirically /-stat/rtasource
+        # alone does NOT move the /meters/15 tap (it drives the small home-screen
+        # RTA only). Enum is 0-indexed: channel N (1-32) → value N-1.
+        # NOTE (unverified live): which of selidx vs rtasource actually steers the
+        # tap was not confirmable without writing to a live board; we set both as
+        # belt-and-suspenders. Confirm per-channel switching next session with the
+        # one-source-at-a-time check documented in the x32-board skill.
         self.send_osc('/-prefs/rta/mode', 1)
         self.send_osc('/-stat/rtasource', channel - 1)
-        # Subscribe to RTA meters (alias == address)
-        self.send_osc('/batchsubscribe', '/meters/4', '/meters/4', 0, 0, 2)
-        # Also subscribe to channel meters for peak level
+        self.send_osc('/-stat/selidx', channel - 1)
+        # Subscribe to the RTA spectrum (/meters/15) and channel meters (/meters/0)
+        self.send_osc('/batchsubscribe', '/meters/15', '/meters/15', 0, 0, 2)
         self.send_osc('/batchsubscribe', '/meters/0', '/meters/0', 0, 0, 2)
 
     def renew_subscriptions(self):
@@ -184,7 +200,7 @@ class RTAListener:
         alias without re-creating the subscription — the gentle alternative to
         the old 100ms re-/batchsubscribe hammer.
         """
-        self.send_osc('/renew', '/meters/4')
+        self.send_osc('/renew', '/meters/15')
         self.send_osc('/renew', '/meters/0')
 
     def unsubscribe(self):
@@ -197,7 +213,7 @@ class RTAListener:
         if not self.sock:
             return
         try:
-            self.send_osc('/unsubscribe', '/meters/4')
+            self.send_osc('/unsubscribe', '/meters/15')
             self.send_osc('/unsubscribe', '/meters/0')
         except OSError:
             pass
@@ -272,8 +288,8 @@ class RTAListener:
                 blob_len = struct.unpack('>i', data[args_start:args_start+4])[0]
                 blob_data = data[args_start+4:args_start+4+blob_len]
 
-                if address == '/meters/4':
-                    # RTA data
+                if address == '/meters/15':
+                    # RTA spectrum data
                     return (parse_rta_blob(blob_data), None)
                 elif address == '/meters/0':
                     # Channel meter data
@@ -356,13 +372,13 @@ class RTAListener:
                 last_xremote = current_time
 
             # Keep the subscription alive with /renew (every ~5s, well inside the
-            # ~10s expiry) instead of re-/batchsubscribing every 100ms. The old
-            # hammer was the source of the /meters/4 corruption/lock, NOT a
-            # protection (docs/CORRECTIONS.md 2026-06-24). Re-assert the RTA
-            # source on the same gentle cadence so a stray tap on the desk's RTA
-            # picker is corrected without flooding the meter feed.
+            # ~10s expiry) instead of re-/batchsubscribing every 100ms. Re-assert
+            # the RTA source/selection on the same gentle cadence so a stray tap
+            # on the desk's RTA picker or a channel-select change can't silently
+            # steal the analyzer source mid-scan.
             if current_time - last_renew > RENEW_INTERVAL:
                 self.send_osc('/-stat/rtasource', self.channel - 1)
+                self.send_osc('/-stat/selidx', self.channel - 1)
                 self.renew_subscriptions()
                 last_renew = current_time
 
@@ -406,8 +422,11 @@ class RTAListener:
 
     @staticmethod
     def bin_to_freq(n: int) -> float:
-        """Convert RTA bin index to approximate frequency in Hz."""
-        return 20.0 * (10.0 ** (3.0 * n / NUM_RTA_BINS))
+        """Convert RTA bin index to approximate frequency in Hz.
+
+        100 bins span 20Hz..20kHz: bin 0 = 20Hz, bin 99 = 20kHz.
+        """
+        return 20.0 * (10.0 ** (3.0 * n / (NUM_RTA_BINS - 1)))
 
     @staticmethod
     def freq_to_band(freq_hz: float) -> str:
@@ -428,49 +447,15 @@ class RTAListener:
         return round(20.0 * math.log10(value / reference), 1)
 
     def _detect_lock(self, avg_bins: List[float]) -> bool:
+        """Deprecated. The "/meters/4 corrupt-lock" never existed.
+
+        Every symptom it chased (fixed peaks at bins 50/74/75, comb of exact-0.0
+        bins, a "silent channel reading loud") was an artifact of parsing the
+        /meters/4 LEVEL-METER bank as if it were a spectrum. With the correct
+        /meters/15 100-band RTA there is nothing to detect here. Kept as a no-op
+        so the --retry-on-lock / cooldown CLI path stays inert rather than firing
+        on real data. See docs/CORRECTIONS.md.
         """
-        Detect the self-inflicted /meters/4 corrupt-lock signature.
-
-        The lock is a structurally broken blob (NOT channel audio, NOT a second
-        X32 client) caused by meter-subscription pile-up — see
-        docs/CORRECTIONS.md 2026-06-24. Signatures verified live that session:
-          - ~40 of 82 bins pinned to *exactly* 0.0, wedged between strong bins
-            (a comb pattern a real spectrum never produces). Averaged over many
-            samples, a real noise floor is a small positive — only a pinned bin
-            averages to exactly 0.0.
-          - the 250Hz bin (index 30) always dead while energy surrounds it.
-          - a silent peak_meter (~0) sitting under a loud RTA blob (lock
-            magnitudes jump ~50x, into the ~0.5 range).
-        """
-        n = len(avg_bins)
-        if n < 32:
-            return False
-
-        STRONG = 0.05  # a "strong" bin in lock-magnitude terms (~0.5 range)
-
-        # Comb pattern: exact-zero bins sandwiched between strong bins.
-        zero_between_strong = 0
-        for i in range(1, n - 1):
-            if avg_bins[i] != 0.0:
-                continue
-            left_strong = any(avg_bins[j] > STRONG for j in range(max(0, i - 3), i))
-            right_strong = any(avg_bins[j] > STRONG for j in range(i + 1, min(n, i + 4)))
-            if left_strong and right_strong:
-                zero_between_strong += 1
-        if zero_between_strong >= 15:
-            return True
-
-        # 250Hz (bin 30) dead while flanked by strong energy.
-        bin30_dead = (avg_bins[30] == 0.0
-                      and (avg_bins[29] > STRONG or avg_bins[31] > STRONG))
-        if bin30_dead and zero_between_strong >= 5:
-            return True
-
-        # Silent channel under a loud RTA blob: meter says nothing is playing
-        # but the feed is pinned bright. (A real signal lifts peak_meter.)
-        if self.peak_meter < 0.005 and (max(avg_bins) if avg_bins else 0) > 0.1:
-            return True
-
         return False
 
     def _validate_data(self, avg_bins: List[float]) -> tuple:
@@ -483,10 +468,15 @@ class RTAListener:
         if len(self.samples) < 10:
             return False, "insufficient samples (need at least 10)"
 
-        # Corrupt-lock signature takes precedence: the remedy is a cooldown +
-        # rescan, not any of the spectral interpretations below.
-        if self._detect_lock(avg_bins):
-            return False, "RTA feed corrupt — cool down and rescan"
+        # Source-select honesty guard: if this channel's own level meter says it
+        # is essentially silent but the RTA shows clear signal, the analyzer is
+        # almost certainly tapping something other than this channel (e.g. the
+        # main mix) — not trustworthy for a per-channel EQ decision. This is the
+        # real failure mode to catch, NOT a "corrupt lock".
+        if self.peak_meter < 0.01 and (max(avg_bins) if avg_bins else 0) > 0.01:
+            return False, ("channel meter silent but RTA shows signal — RTA "
+                           "source-select is not tracking this channel "
+                           "(verify per-channel RTA on the desk)")
 
         max_raw = 1.0
         # Check if >80% of bins are within 5% of max
@@ -573,7 +563,7 @@ class RTAListener:
 
         # 1. Buildup detection: bins in 200-500Hz that are within 6dB of peak
         #    (common mud zone)
-        for i in range(25, 38):  # ~200Hz to ~500Hz (82-bin mapping)
+        for i in range(33, 46):  # ~200Hz to ~500Hz (100-bin mapping)
             if avg_bins[i] < MIN_SIGNAL_THRESHOLD:
                 continue
             if db_bins[i] > -6.0:
@@ -593,7 +583,7 @@ class RTAListener:
                     })
 
         # 2. Thinness: if average of bins above 8kHz is more than 20dB below peak
-        high_bins = [db_bins[i] for i in range(71, len(avg_bins)) if avg_bins[i] >= MIN_SIGNAL_THRESHOLD]
+        high_bins = [db_bins[i] for i in range(86, len(avg_bins)) if avg_bins[i] >= MIN_SIGNAL_THRESHOLD]
         if high_bins:
             high_avg = sum(high_bins) / len(high_bins)
             if high_avg < -20.0:
@@ -606,7 +596,7 @@ class RTAListener:
                 })
 
         # 3. Harsh resonance: narrow peak in 2-5kHz with high prominence
-        for i in range(55, 66):  # ~2kHz to ~5kHz (82-bin mapping)
+        for i in range(66, 79):  # ~2kHz to ~5kHz (100-bin mapping)
             if avg_bins[i] < MIN_SIGNAL_THRESHOLD:
                 continue
             left = max(0, i - 2)
@@ -638,9 +628,9 @@ class RTAListener:
 
     def _compute_spectral_tilt(self, avg_bins: List[float]) -> str:
         """Compute spectral tilt as dB difference between low and high energy."""
-        # Average dB of sub+bass bins (0-26) vs brilliance+high bins (77-100)
-        low_vals = [v for v in avg_bins[0:21] if v >= MIN_SIGNAL_THRESHOLD]
-        high_vals = [v for v in avg_bins[63:] if v >= MIN_SIGNAL_THRESHOLD]
+        # Average dB of sub+bass bins (0-26) vs brilliance+high bins (76-100)
+        low_vals = [v for v in avg_bins[0:26] if v >= MIN_SIGNAL_THRESHOLD]
+        high_vals = [v for v in avg_bins[76:] if v >= MIN_SIGNAL_THRESHOLD]
 
         if not low_vals or not high_vals:
             return "insufficient signal for tilt measurement"
@@ -666,7 +656,7 @@ class RTAListener:
 
     def _compute_transient_character(self, cv_bins: List[float]) -> str:
         """Determine transient character from coefficient of variation in low end."""
-        low_cvs = [cv_bins[i] for i in range(0, 21) if cv_bins[i] is not None]
+        low_cvs = [cv_bins[i] for i in range(0, 26) if cv_bins[i] is not None]
         if not low_cvs:
             return "unknown (no low-end signal)"
 
